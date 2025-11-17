@@ -1,0 +1,58 @@
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env*.local
+.env.production
+.env.development
+
+# Node modules (root level, if any)
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Supabase
+.supabase/
+
+# Unity (android folder)
+# Note: android/.gitignore handles Unity-specific ignores
+
+# Next.js (site folder)
+# Note: site/.gitignore handles Next.js-specific ignores
+
