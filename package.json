@@ -1,5 +1,14 @@
 {
   "name": "ar-tifact",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "format:cs": "dotnet format android/*.sln --verbosity quiet || echo 'Note: .sln file not found. Unity will generate it when you open the project. Use your IDE formatter (VS Code, Visual Studio, Rider) which will use .editorconfig automatically.'",
+    "format:cs:check": "dotnet format android/*.sln --verify-no-changes --verbosity quiet || echo 'Note: .sln file not found. Unity will generate it when you open the project.'"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  }
 }

@@ -30,3 +30,9 @@ pnpm-lock.yaml
 .DS_Store
 Thumbs.db
 
+.json
+.prettierrc.json
+.prettierignore
+
+# C# files (Prettier doesn't support C#)
+*.cs
