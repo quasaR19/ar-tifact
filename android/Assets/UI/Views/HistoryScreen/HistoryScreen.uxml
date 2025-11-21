@@ -1,0 +1,32 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements"
+    xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements"
+    editor="UnityEditor.UIElements"
+    noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+        <ui:VisualElement name="history-screen" class="history-screen">
+        <!-- Заголовок -->
+        <ui:VisualElement name="header" class="history-header">
+            <ui:Label name="title" class="history-title" text="История" />
+            <ui:Button name="clear-button" class="history-clear-button" text="Очистить" />
+            <ui:Button name="close-button" class="close-button">
+                <ui:VisualElement class="icon icon-close" />
+            </ui:Button>
+        </ui:VisualElement>
+
+        <!-- Состояние загрузки -->
+        <ui:VisualElement name="loading-state" class="loading-state">
+            <ui:Label text="Синхронизация истории..." />
+        </ui:VisualElement>
+
+        <!-- Список истории -->
+        <ui:ScrollView name="history-list" class="history-list">
+            <ui:VisualElement name="history-container" class="history-container">
+                <!-- Элементы добавляются через контроллер -->
+            </ui:VisualElement>
+        </ui:ScrollView>
+
+        <!-- Сообщение об отсутствии данных -->
+        <ui:VisualElement name="empty-state" class="empty-state">
+            <ui:Label text="История пока пуста" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

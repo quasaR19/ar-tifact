@@ -1,0 +1,9 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements" editor="UnityEditor.UIElements" noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+    <ui:VisualElement name="launch-screen" class="launch-screen">
+        <ui:VisualElement name="throbber-container" class="throbber-container">
+            <ui:VisualElement name="throbber" class="throbber" />
+        </ui:VisualElement>
+        <ui:Label name="status-label" class="status-label" text="Инициализация..." />
+    </ui:VisualElement>
+</ui:UXML>
+

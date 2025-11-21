@@ -1,0 +1,37 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements" editor="UnityEditor.UIElements" noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+        <ui:VisualElement name="markers-screen" class="markers-screen">
+        <!-- Заголовок -->
+        <ui:VisualElement name="header" class="markers-header">
+            <ui:Label name="title" class="markers-title" text="Маркеры" />
+            <ui:Button name="close-button" class="close-button">
+                <ui:VisualElement class="icon icon-close" />
+            </ui:Button>
+        </ui:VisualElement>
+        
+        <!-- Информация о последнем обновлении -->
+        <ui:VisualElement name="update-info" class="update-info">
+            <ui:Label name="last-update-label" class="last-update-label" text="Последнее обновление: " />
+            <ui:Label name="last-update-time" class="last-update-time" text="Никогда" />
+        </ui:VisualElement>
+        
+        <!-- Кнопка обновления -->
+        <ui:Button name="refresh-button" class="refresh-button" text="Обновить" />
+        
+        <!-- Индикатор загрузки -->
+        <ui:VisualElement name="loading-indicator" class="loading-indicator">
+            <ui:Label text="Загрузка..." />
+        </ui:VisualElement>
+        
+        <!-- Список маркеров -->
+        <ui:ScrollView name="markers-list" class="markers-list">
+            <ui:VisualElement name="markers-container" class="markers-container">
+                <!-- Маркеры будут добавляться динамически -->
+            </ui:VisualElement>
+        </ui:ScrollView>
+        
+        <!-- Сообщение об отсутствии маркеров -->
+        <ui:VisualElement name="empty-state" class="empty-state">
+            <ui:Label text="Маркеры не найдены" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

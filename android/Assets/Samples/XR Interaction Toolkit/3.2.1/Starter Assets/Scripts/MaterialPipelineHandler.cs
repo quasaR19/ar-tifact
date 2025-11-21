@@ -103,6 +103,17 @@ namespace UnityEngine.XR.Interaction.Toolkit.Samples.StarterAssets
                 // Determine current shader for comparison
                 Shader currentShader = info.material.shader;
 
+                // Fix incompatible "Simulation/Standard Lit" shader
+                if (currentShader != null && currentShader.name == "Simulation/Standard Lit" && !isBuiltinRenderPipeline)
+                {
+                    if (srpShader != null)
+                    {
+                        info.material.shader = srpShader;
+                        MarkMaterialModified(info.material);
+                        continue;
+                    }
+                }
+
                 // Update shader for the current render pipeline only if necessary
                 if (isBuiltinRenderPipeline && birpShader != null && currentShader != birpShader)
                 {

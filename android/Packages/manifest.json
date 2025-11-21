@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity",
     "com.unity.2d.sprite": "1.0.0",
     "com.unity.2d.tilemap": "1.0.0",
     "com.unity.ads": "4.4.2",
@@ -18,12 +19,14 @@
     "com.unity.test-framework": "1.6.0",
     "com.unity.timeline": "1.8.9",
     "com.unity.ugui": "2.0.0",
+    "com.unity.xr-content.xr-sim-environments": "file:../ContentPackages\\com.unity.xr-content.xr-sim-environments-2.1.1.tgz",
     "com.unity.xr.arcore": "6.2.0",
     "com.unity.xr.arfoundation": "6.2.0",
     "com.unity.xr.arkit": "6.2.0",
     "com.unity.xr.interaction.toolkit": "3.2.1",
     "com.unity.xr.legacyinputhelpers": "2.1.12",
     "com.unity.xr.management": "4.5.3",
+    "org.khronos.unitygltf": "https://github.com/KhronosGroup/UnityGLTF.git",
     "com.unity.modules.accessibility": "1.0.0",
     "com.unity.modules.ai": "1.0.0",
     "com.unity.modules.androidjni": "1.0.0",

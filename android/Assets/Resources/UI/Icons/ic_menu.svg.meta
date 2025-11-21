@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 4f2b4198a1df4a1b8f772f3f2d1b77a5
+ScriptedImporter:
+  internalIDToNameTable: []
+  externalObjects: {}
+  serializedVersion: 2
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+  script: {fileID: 11500000, guid: 24744c7018ec94743a1c5f5f9c0920d2, type: 3}
+  disableValidation: 0
+  svgTextureSize: 256
+  svgPixelsPerUnit: 100
+  gradientResolution: 64
+  alignVertexDataToPixelGrid: 1
+  preserveViewport: 1
+  useGradients: 1
+

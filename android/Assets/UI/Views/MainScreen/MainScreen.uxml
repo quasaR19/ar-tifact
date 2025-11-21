@@ -1,0 +1,34 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements"
+    xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements"
+    editor="UnityEditor.UIElements"
+    noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+        <ui:VisualElement name="main-screen" class="main-screen" style="background-color: transparent;">
+        <!-- Хедер с бургер-меню -->
+        <ui:VisualElement name="header" class="header">
+            <ui:Button name="burger-menu-button" class="burger-menu-button">
+                <ui:VisualElement class="icon icon-burger" />
+            </ui:Button>
+            <ui:Label name="header-title" class="header-title" text="AR Artifact" />
+        </ui:VisualElement>
+
+        <!-- Боковое меню (скрыто по умолчанию) -->
+        <ui:VisualElement name="side-menu" class="side-menu">
+            <ui:VisualElement name="side-menu-overlay" class="side-menu-overlay" />
+            <ui:VisualElement name="side-menu-content" class="side-menu-content">
+                <ui:Label name="menu-title" class="menu-title" text="Меню" />
+                <ui:Button name="menu-close-button" class="menu-close-button">
+                    <ui:VisualElement class="icon icon-close" />
+                </ui:Button>
+                <ui:VisualElement name="menu-items" class="menu-items">
+                    <!-- Пункты меню будут добавляться динамически -->
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Лог-окошко для отображения распознанных таргетов -->
+        <ui:VisualElement name="target-log-container" class="target-log-container">
+            <ui:Label name="target-log-new" class="target-log-new" text="" />
+            <ui:Label name="target-log-old" class="target-log-old" text="" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>
