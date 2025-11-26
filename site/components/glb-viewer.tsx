@@ -230,7 +230,7 @@ function OrbitControlsWithTarget({ target }: { target: THREE.Vector3 | null }) {
       enablePan={true}
       enableRotate={true}
       minDistance={1}
-      maxDistance={20}
+      maxDistance={100}
       target={target ? [target.x, target.y, target.z] : [0, 0, 0]}
     />
   );

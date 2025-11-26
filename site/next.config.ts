@@ -9,9 +9,18 @@ const nextConfig: NextConfig = {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: process.env.NEXT_PUBLIC_VERCEL_BLOB_HOSTNAME || "",
+        hostname: "**.public.blob.vercel-storage.com",
         pathname: "/**",
       },
+      ...(process.env.NEXT_PUBLIC_VERCEL_BLOB_HOSTNAME
+        ? [
+            {
+              protocol: "https" as const,
+              hostname: process.env.NEXT_PUBLIC_VERCEL_BLOB_HOSTNAME,
+              pathname: "/**",
+            },
+          ]
+        : []),
     ],
   },
   webpack(config) {
