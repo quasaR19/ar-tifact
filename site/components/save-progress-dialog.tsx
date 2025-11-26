@@ -7,8 +7,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { CheckCircle2, Loader2, XCircle, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 export type SaveStepStatus = "pending" | "processing" | "success" | "error";
 
@@ -42,7 +42,9 @@ export function SaveProgressDialog({
       case "processing":
         return <Loader2 className="h-5 w-5 text-blue-500 animate-spin" />;
       default:
-        return <div className="h-5 w-5 rounded-full border-2 border-muted-foreground/30" />;
+        return (
+          <div className="h-5 w-5 rounded-full border-2 border-muted-foreground/30" />
+        );
     }
   };
 
@@ -134,14 +136,18 @@ export function SaveProgressDialog({
                 className={cn(
                   "flex items-start gap-3 p-3 rounded-lg border transition-colors",
                   step.status === "error" && "border-red-500/50 bg-red-500/5",
-                  step.status === "success" && "border-green-500/50 bg-green-500/5",
-                  step.status === "processing" && "border-blue-500/50 bg-blue-500/5"
+                  step.status === "success" &&
+                    "border-green-500/50 bg-green-500/5",
+                  step.status === "processing" &&
+                    "border-blue-500/50 bg-blue-500/5"
                 )}
               >
                 <div className="mt-0.5">{getStatusIcon(step.status)}</div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium text-sm">{step.label}</p>
+                    <p className="font-medium text-sm text-muted-foreground">
+                      {step.label}
+                    </p>
                     <span
                       className={cn(
                         "text-xs",
@@ -155,15 +161,10 @@ export function SaveProgressDialog({
                     </span>
                   </div>
                   {step.details && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {step.details}
-                    </p>
+                    <p className="mt-1 text-xs text-muted">{step.details}</p>
                   )}
                   {step.error && (
-                    <div className="mt-2 flex items-start gap-2 text-xs text-red-500">
-                      <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                      <span>{step.error}</span>
-                    </div>
+                    <p className="mt-1 text-xs text-red-500">{step.error}</p>
                   )}
                 </div>
               </div>

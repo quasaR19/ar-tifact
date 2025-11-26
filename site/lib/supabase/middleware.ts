@@ -43,6 +43,19 @@ export async function updateSession(request: NextRequest) {
   // Разрешаем доступ к страницам аутентификации без авторизации
   const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
 
+  // Если пользователь авторизован и пытается зайти на страницу аутентификации
+  if (user && isAuthPage) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/";
+    const redirectResponse = NextResponse.redirect(url);
+    // Копируем cookies из supabaseResponse, чтобы сохранить сессию
+    const cookies = supabaseResponse.cookies.getAll();
+    cookies.forEach((cookie) => {
+      redirectResponse.cookies.set(cookie.name, cookie.value);
+    });
+    return redirectResponse;
+  }
+
   // Если пользователь не авторизован и пытается зайти на защищенную страницу
   if (!user && !isAuthPage) {
     const url = request.nextUrl.clone();

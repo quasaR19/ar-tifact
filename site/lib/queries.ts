@@ -3,15 +3,12 @@ import type {
   ArtifactDb,
   ArtifactMedia,
   ArtifactMediaDb,
-  ArtifactTarget,
-  ArtifactTargetDb,
   Target,
   TargetDb,
 } from "@/lib/types/artifact";
 import {
   convertArtifactFromDb,
   convertArtifactMediaFromDb,
-  convertArtifactTargetFromDb,
   convertTargetFromDb,
 } from "@/lib/types/artifact";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -26,7 +23,7 @@ export interface PaginatedArtifacts {
 
 export interface ArtifactWithDetails extends Artifact {
   media: ArtifactMedia[];
-  targets: ArtifactTarget[];
+  targets: Target[];
 }
 
 /**
@@ -140,17 +137,11 @@ export async function getArtifactById(
     throw mediaError;
   }
 
-  // Получаем таргеты через JOIN с таблицей targets
+  // Получаем таргеты из таблицы targets
   const { data: targetsData, error: targetsError } = await supabase
-    .from("artifact_targets")
-    .select(
-      `
-      *,
-      targets(*)
-    `
-    )
+    .from("targets")
+    .select("*")
     .eq("artifact_id", artifactId)
-    .order("display_priority", { ascending: true })
     .order("created_at", { ascending: true });
 
   // Если таблица не существует - используем пустой массив
@@ -165,8 +156,8 @@ export async function getArtifactById(
     media: (mediaData ?? []).map((item: ArtifactMediaDb) =>
       convertArtifactMediaFromDb(item)
     ),
-    targets: (targetsData ?? []).map((item: ArtifactTargetDb) =>
-      convertArtifactTargetFromDb(item)
+    targets: (targetsData ?? []).map((item: TargetDb) =>
+      convertTargetFromDb(item)
     ),
   };
 }
@@ -235,24 +226,139 @@ export async function updateArtifact(
 }
 
 /**
- * Удаление артефакта (мягкое удаление через is_active = false)
+ * Удаление артефакта (полное удаление из БД)
  * @param supabaseClient - клиент Supabase (обязательный)
  * @param artifactId - ID артефакта
+ * @returns объект с URL файлов для удаления из Blob Storage
  */
 export async function deleteArtifact(
   supabaseClient: SupabaseClient,
   artifactId: string
-): Promise<void> {
+): Promise<{
+  previewImageUrl: string | null;
+  mediaUrls: string[];
+  targetUrls: string[];
+}> {
   const supabase = supabaseClient;
 
+  // Получаем данные артефакта перед удалением
+  const { data: artifactData, error: artifactError } = await supabase
+    .from("artifacts")
+    .select("preview_image_url")
+    .eq("id", artifactId)
+    .single();
+
+  if (artifactError) {
+    throw artifactError;
+  }
+
+  // Получаем все медиа-файлы артефакта
+  const { data: mediaData, error: mediaError } = await supabase
+    .from("artifact_media")
+    .select("media_id, media(url)")
+    .eq("artifact_id", artifactId);
+
+  if (mediaError) {
+    console.error("[deleteArtifact] Ошибка при получении медиа:", mediaError);
+    // Продолжаем удаление даже при ошибке получения медиа
+  }
+
+  // Получаем все таргеты артефакта
+  const { data: targetsData, error: targetsError } = await supabase
+    .from("targets")
+    .select("url")
+    .eq("artifact_id", artifactId);
+
+  if (targetsError) {
+    console.error("[deleteArtifact] Ошибка при получении таргетов:", targetsError);
+    // Продолжаем удаление даже при ошибке получения таргетов
+  }
+
+  // Собираем URL для удаления
+  const mediaUrls: string[] = [];
+  if (mediaData) {
+    for (const item of mediaData) {
+      // @ts-ignore
+      const url = item.media?.url;
+      if (url) {
+        mediaUrls.push(url);
+      }
+    }
+  }
+
+  const targetUrls: string[] = (targetsData || []).map((t) => t.url).filter(Boolean);
+
+  // Удаляем связи медиа с артефактом
+  const { error: mediaLinksError } = await supabase
+    .from("artifact_media")
+    .delete()
+    .eq("artifact_id", artifactId);
+
+  if (mediaLinksError) {
+    console.error(
+      "[deleteArtifact] Ошибка при удалении связей медиа:",
+      mediaLinksError
+    );
+    // Продолжаем удаление
+  }
+
+  // Удаляем медиа-ресурсы, которые больше не используются
+  if (mediaData) {
+    for (const item of mediaData) {
+      const mediaId = item.media_id;
+      // Проверяем, используется ли медиа другими артефактами
+      const { data: otherLinks } = await supabase
+        .from("artifact_media")
+        .select("id")
+        .eq("media_id", mediaId)
+        .limit(1);
+
+      if (!otherLinks || otherLinks.length === 0) {
+        // Медиа больше не используется, удаляем его
+        const { error: mediaDeleteError } = await supabase
+          .from("media")
+          .delete()
+          .eq("id", mediaId);
+
+        if (mediaDeleteError) {
+          console.error(
+            "[deleteArtifact] Ошибка при удалении медиа:",
+            mediaDeleteError
+          );
+        }
+      }
+    }
+  }
+
+  // Удаляем таргеты
+  const { error: targetsDeleteError } = await supabase
+    .from("targets")
+    .delete()
+    .eq("artifact_id", artifactId);
+
+  if (targetsDeleteError) {
+    console.error(
+      "[deleteArtifact] Ошибка при удалении таргетов:",
+      targetsDeleteError
+    );
+    // Продолжаем удаление
+  }
+
+  // Удаляем сам артефакт
   const { error } = await supabase
     .from("artifacts")
-    .update({ is_active: false })
+    .delete()
     .eq("id", artifactId);
 
   if (error) {
     throw error;
   }
+
+  return {
+    previewImageUrl: artifactData?.preview_image_url || null,
+    mediaUrls,
+    targetUrls,
+  };
 }
 
 /**
@@ -319,24 +425,68 @@ export async function addArtifactMedia(
 }
 
 /**
+ * Обновление метаданных медиа-ресурса через связь с артефактом
+ * @param supabaseClient - клиент Supabase
+ * @param linkId - ID связи из таблицы artifact_media
+ * @param metadata - новые метаданные
+ */
+export async function updateArtifactMediaMetadata(
+  supabaseClient: SupabaseClient,
+  linkId: string,
+  metadata: Record<string, unknown>
+): Promise<void> {
+  const supabase = supabaseClient;
+
+  // Получаем media_id из связи
+  const { data: linkData, error: linkError } = await supabase
+    .from("artifact_media")
+    .select("media_id")
+    .eq("id", linkId)
+    .single();
+
+  if (linkError || !linkData) {
+    console.error(
+      "[updateArtifactMediaMetadata] Ошибка при получении связи:",
+      linkError
+    );
+    throw linkError || new Error("Связь не найдена");
+  }
+
+  // Обновляем метаданные в таблице media
+  const { error } = await supabase
+    .from("media")
+    .update({ metadata })
+    .eq("id", linkData.media_id);
+
+  if (error) {
+    console.error(
+      "[updateArtifactMediaMetadata] Ошибка при обновлении метаданных:",
+      error
+    );
+    throw error;
+  }
+}
+
+/**
  * Удаление связи медиа с артефактом
  * @param supabaseClient - клиент Supabase (обязательный)
  * @param linkId - ID связи из таблицы artifact_media
  * @param deleteMedia - удалить сам медиа-ресурс, если он больше не используется (по умолчанию false)
+ * @returns URL удаленного медиа-ресурса, если он был удален, иначе null
  */
 export async function deleteArtifactMedia(
   supabaseClient: SupabaseClient,
   linkId: string,
   deleteMedia: boolean = false
-): Promise<void> {
+): Promise<string | null> {
   const supabase = supabaseClient;
 
   console.log("[deleteArtifactMedia] Удаление связи с ID:", linkId);
 
-  // Получаем информацию о связи перед удалением
+  // Получаем информацию о связи перед удалением (включая URL медиа)
   const { data: linkData, error: linkFetchError } = await supabase
     .from("artifact_media")
-    .select("media_id")
+    .select("media_id, media(url)")
     .eq("id", linkId)
     .single();
 
@@ -353,6 +503,8 @@ export async function deleteArtifactMedia(
   }
 
   const mediaId = linkData.media_id;
+  // @ts-ignore
+  const mediaUrl = linkData.media?.url;
 
   // Удаляем связь
   const { error, data } = await supabase
@@ -410,27 +562,37 @@ export async function deleteArtifactMedia(
           "[deleteArtifactMedia] Медиа-ресурс также удален:",
           mediaId
         );
+        return mediaUrl || null;
       }
     }
   }
+
+  return null;
 }
 
 /**
  * Создание нового таргета
  * @param supabaseClient - клиент Supabase (обязательный)
+ * @param artifactId - ID артефакта
  * @param url - URL изображения-таргета
+ * @param sizeCm - размер стороны квадрата в см
+ * @param displayPriority - приоритет отображения
  * @returns созданный таргет
  */
 export async function createTarget(
   supabaseClient: SupabaseClient,
-  url: string
+  artifactId: string,
+  url: string,
+  sizeCm: number = 10
 ): Promise<Target> {
   const supabase = supabaseClient;
 
   const { data, error } = await supabase
     .from("targets")
     .insert({
+      artifact_id: artifactId,
       url,
+      size_cm: sizeCm,
     })
     .select()
     .single();
@@ -443,164 +605,42 @@ export async function createTarget(
 }
 
 /**
- * Добавление таргета к артефакту
+ * Удаление таргета
  * @param supabaseClient - клиент Supabase (обязательный)
- * @param artifactId - ID артефакта
  * @param targetId - ID таргета
- * @param displayPriority - приоритет отображения (по умолчанию 0)
- * @returns созданная связь артефакта с таргетом
- */
-export async function addArtifactTarget(
-  supabaseClient: SupabaseClient,
-  artifactId: string,
-  targetId: string,
-  displayPriority: number = 0
-): Promise<ArtifactTarget> {
-  const supabase = supabaseClient;
-
-  console.log("[addArtifactTarget] Параметры:", {
-    artifactId,
-    targetId,
-    displayPriority,
-  });
-
-  const { data, error } = await supabase
-    .from("artifact_targets")
-    .insert({
-      artifact_id: artifactId,
-      target_id: targetId,
-      display_priority: displayPriority,
-    })
-    .select("*, targets(*)")
-    .single();
-
-  if (error) {
-    console.error("[addArtifactTarget] Ошибка при создании связи:", error);
-    throw error;
-  }
-
-  console.log("[addArtifactTarget] Связь создана:", data);
-
-  return convertArtifactTargetFromDb(data as ArtifactTargetDb);
-}
-
-/**
- * Удаление связи таргета с артефактом
- * @param supabaseClient - клиент Supabase (обязательный)
- * @param linkId - ID связи из таблицы artifact_targets
- * @param deleteTarget - удалить сам таргет, если он больше не используется (по умолчанию false)
+ * @returns URL удаленного таргета или null
  */
 export async function deleteArtifactTarget(
   supabaseClient: SupabaseClient,
-  linkId: string,
-  deleteTarget: boolean = false
-): Promise<void> {
+  targetId: string
+): Promise<string | null> {
   const supabase = supabaseClient;
 
-  console.log("[deleteArtifactTarget] Удаление связи с ID:", linkId);
-
-  // Получаем информацию о связи перед удалением
-  const { data: linkData, error: linkFetchError } = await supabase
-    .from("artifact_targets")
-    .select("target_id")
-    .eq("id", linkId)
+  // Получаем информацию о таргете перед удалением
+  const { data: targetData, error: targetFetchError } = await supabase
+    .from("targets")
+    .select("url")
+    .eq("id", targetId)
     .single();
 
-  if (linkFetchError) {
+  if (targetFetchError) {
     console.error(
-      "[deleteArtifactTarget] Ошибка при получении связи:",
-      linkFetchError
+      "[deleteArtifactTarget] Ошибка при получении таргета:",
+      targetFetchError
     );
-    throw linkFetchError;
+    throw targetFetchError;
   }
 
-  if (!linkData) {
-    throw new Error(`Связь с ID ${linkId} не найдена.`);
-  }
-
-  const targetId = linkData.target_id;
-
-  // Удаляем связь
-  const { error, data } = await supabase
-    .from("artifact_targets")
+  const { error } = await supabase
+    .from("targets")
     .delete()
-    .eq("id", linkId)
-    .select();
+    .eq("id", targetId);
 
   if (error) {
-    console.error("[deleteArtifactTarget] Ошибка при удалении связи:", error);
+    console.error("[deleteArtifactTarget] Ошибка при удалении таргета:", error);
     throw error;
   }
 
-  if (!data || data.length === 0) {
-    console.warn(
-      "[deleteArtifactTarget] Связь не была удалена (возможно, нет прав):",
-      linkId
-    );
-    throw new Error(
-      `Связь с ID ${linkId} не была удалена. Возможно, нет прав доступа.`
-    );
-  }
-
-  console.log("[deleteArtifactTarget] Связь успешно удалена:", data);
-
-  // Если нужно удалить сам таргет, проверяем, используется ли он еще
-  if (deleteTarget) {
-    const { data: otherLinks, error: checkError } = await supabase
-      .from("artifact_targets")
-      .select("id")
-      .eq("target_id", targetId)
-      .limit(1);
-
-    if (checkError) {
-      console.error(
-        "[deleteArtifactTarget] Ошибка при проверке использования таргета:",
-        checkError
-      );
-      // Не прерываем выполнение, так как связь уже удалена
-    } else if (!otherLinks || otherLinks.length === 0) {
-      // Таргет больше не используется, удаляем его
-      const { error: targetDeleteError } = await supabase
-        .from("targets")
-        .delete()
-        .eq("id", targetId);
-
-      if (targetDeleteError) {
-        console.error(
-          "[deleteArtifactTarget] Ошибка при удалении таргета:",
-          targetDeleteError
-        );
-        // Не прерываем выполнение, так как связь уже удалена
-      } else {
-        console.log("[deleteArtifactTarget] Таргет также удален:", targetId);
-      }
-    }
-  }
+  return targetData?.url || null;
 }
 
-/**
- * Обновление приоритета отображения таргета для артефакта
- * @param supabaseClient - клиент Supabase (обязательный)
- * @param linkId - ID связи из таблицы artifact_targets
- * @param displayPriority - новый приоритет отображения
- */
-export async function updateArtifactTargetPriority(
-  supabaseClient: SupabaseClient,
-  linkId: string,
-  displayPriority: number
-): Promise<ArtifactTarget> {
-  const supabase = supabaseClient;
-
-  const { data, error } = await supabase
-    .from("artifact_targets")
-    .update({ display_priority: displayPriority })
-    .eq("id", linkId)
-    .select("*, targets(*)")
-    .single();
-
-  if (error) {
-    throw error;
-  }
-
-  return convertArtifactTargetFromDb(data as ArtifactTargetDb);
-}

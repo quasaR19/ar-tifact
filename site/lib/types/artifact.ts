@@ -20,26 +20,9 @@ export interface Media {
 // Таргет (маркер)
 export interface Target {
   id: string;
+  artifact_id: string;
   url: string;
-  created_at: string;
-}
-
-// Связь артефакта с медиа (с полной информацией о медиа)
-export interface ArtifactMedia {
-  id: string; // ID связи из artifact_media
-  artifact_id: string;
-  media_id: string;
-  media: Media; // полная информация о медиа
-  created_at: string;
-}
-
-// Связь артефакта с таргетом (с полной информацией о таргете)
-export interface ArtifactTarget {
-  id: string; // ID связи из artifact_targets
-  artifact_id: string;
-  target_id: string;
-  target: Target; // полная информация о таргете
-  display_priority: number;
+  size_cm: number;
   created_at: string;
 }
 
@@ -65,7 +48,9 @@ export interface MediaDb {
 
 export interface TargetDb {
   id: string;
+  artifact_id: string;
   url: string;
+  size_cm: number;
   created_at: string;
 }
 
@@ -73,14 +58,7 @@ export interface ArtifactMediaLinkDb {
   id: string;
   artifact_id: string;
   media_id: string;
-  created_at: string;
-}
-
-export interface ArtifactTargetLinkDb {
-  id: string;
-  artifact_id: string;
-  target_id: string;
-  display_priority: number;
+  display_order: number;
   created_at: string;
 }
 
@@ -89,17 +67,19 @@ export interface ArtifactMediaDb {
   id: string;
   artifact_id: string;
   media_id: string;
+  display_order: number;
   created_at: string;
   media: MediaDb;
 }
 
-export interface ArtifactTargetDb {
+// Связь артефакта с медиа (для использования в приложении)
+export interface ArtifactMedia {
   id: string;
   artifact_id: string;
-  target_id: string;
-  display_priority: number;
+  media_id: string;
+  display_order: number;
+  media: Media;
   created_at: string;
-  targets: TargetDb; // Supabase возвращает данные под именем таблицы
 }
 
 /**
@@ -151,7 +131,9 @@ export function convertMediaFromDb(db: MediaDb): Media {
 export function convertTargetFromDb(db: TargetDb): Target {
   return {
     id: db.id,
+    artifact_id: db.artifact_id,
     url: db.url,
+    size_cm: db.size_cm,
     created_at: db.created_at,
   };
 }
@@ -164,23 +146,8 @@ export function convertArtifactMediaFromDb(db: ArtifactMediaDb): ArtifactMedia {
     id: db.id,
     artifact_id: db.artifact_id,
     media_id: db.media_id,
+    display_order: db.display_order ?? 0,
     media: convertMediaFromDb(db.media),
-    created_at: db.created_at,
-  };
-}
-
-/**
- * Конвертация связи артефакта с таргетом из формата БД в TypeScript тип
- */
-export function convertArtifactTargetFromDb(
-  db: ArtifactTargetDb
-): ArtifactTarget {
-  return {
-    id: db.id,
-    artifact_id: db.artifact_id,
-    target_id: db.target_id,
-    target: convertTargetFromDb(db.targets),
-    display_priority: db.display_priority,
     created_at: db.created_at,
   };
 }

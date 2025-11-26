@@ -12,6 +12,7 @@
   /* Utility-specific aliases (optional) */
   --background-color-primary: var(--color-primary);
   --text-color-primary: var(--color-primary-foreground);
+  --text-color-muted: hsl(var(--muted-foreground));
   --background-color-accent: var(--color-accent);
   --text-color-accent: var(--color-accent-foreground);
   --background-color-card: hsl(var(--card));

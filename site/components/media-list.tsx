@@ -8,6 +8,7 @@ interface MediaListProps {
   media: LocalMediaItem[];
   onMediaAdd: (media: LocalMediaItem) => void;
   onMediaRemove: (id: string) => void;
+  onMediaUpdate?: (id: string, updates: Partial<LocalMediaItem>) => void;
   className?: string;
 }
 
@@ -15,6 +16,7 @@ export function MediaList({
   media,
   onMediaAdd,
   onMediaRemove,
+  onMediaUpdate,
   className,
 }: MediaListProps) {
   return (
@@ -26,6 +28,7 @@ export function MediaList({
             key={item.id}
             media={item}
             onRemove={() => onMediaRemove(item.id)}
+            onUpdate={(updates) => onMediaUpdate?.(item.id, updates)}
           />
         ))}
         <MediaUploader onMediaAdd={onMediaAdd} />

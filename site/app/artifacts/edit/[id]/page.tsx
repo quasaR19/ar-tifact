@@ -12,10 +12,10 @@ import type { LocalTargetItem } from "@/components/target-uploader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { checkImageQualityFromUrl } from "@/lib/image-analysis/imageQualityChecker";
 import type { ArtifactWithDetails } from "@/lib/queries";
 import {
   addArtifactMedia,
-  addArtifactTarget,
   createArtifact,
   createTarget,
   deleteArtifact,
@@ -23,12 +23,13 @@ import {
   deleteArtifactTarget,
   getArtifactById,
   updateArtifact,
+  updateArtifactMediaMetadata,
 } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/client";
 import { upload } from "@vercel/blob/client";
 import { Loader2, Save, Trash2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 export default function ArtifactEditPage() {
   const params = useParams();
@@ -85,13 +86,39 @@ export default function ArtifactEditPage() {
         }));
         setLocalMedia(existingMedia);
 
-        // Преобразуем существующие таргеты в LocalTargetItem
-        const existingTargets: LocalTargetItem[] = data.targets.map((t) => ({
-          id: t.id,
-          url: t.target.url,
-        }));
+        // Преобразуем существующие таргеты в LocalTargetItem и анализируем качество
+        const existingTargets: LocalTargetItem[] = await Promise.all(
+          data.targets.map(async (t) => {
+            let qualityScore: number | undefined;
+            try {
+              const qualityResult = await checkImageQualityFromUrl(t.url);
+              qualityScore = qualityResult.score;
+            } catch (err) {
+              console.warn(
+                `Не удалось проанализировать качество таргета ${t.id}:`,
+                err
+              );
+              // Продолжаем без балла качества, если анализ не удался
+            }
+            return {
+              id: t.id,
+              url: t.url,
+              size_cm: t.size_cm,
+              quality_score: qualityScore,
+            };
+          })
+        );
         setLocalTargets(existingTargets);
       } catch (err) {
+        console.error("Ошибка загрузки артефакта:", {
+          error: err,
+          artifactId,
+          isNew,
+          errorType: err?.constructor?.name,
+          errorMessage: err instanceof Error ? err.message : String(err),
+          errorStack: err instanceof Error ? err.stack : undefined,
+          timestamp: new Date().toISOString(),
+        });
         setError(
           err instanceof Error ? err.message : "Ошибка загрузки артефакта"
         );
@@ -111,6 +138,15 @@ export default function ArtifactEditPage() {
     setLocalMedia((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
+  const handleMediaUpdate = useCallback(
+    (id: string, updates: Partial<LocalMediaItem>) => {
+      setLocalMedia((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+      );
+    },
+    []
+  );
+
   const handlePreviewImageSelect = useCallback((file: File) => {
     setPreviewImageFile(file);
   }, []);
@@ -128,12 +164,23 @@ export default function ArtifactEditPage() {
     setLocalTargets((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const handleTargetUpdate = useCallback(
+    (id: string, updates: Partial<LocalTargetItem>) => {
+      setLocalTargets((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
+      );
+    },
+    []
+  );
+
   const uploadMediaToBlob = async (
     file: File,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _artifactId: string
+    _artifactId: string,
+    prefix: "preview" | "model" | "video" | "target" = "preview"
   ): Promise<string> => {
-    const blob = await upload(file.name, file, {
+    // Добавляем префикс к имени файла
+    const fileName = `${prefix}-${file.name}`;
+    const blob = await upload(fileName, file, {
       access: "public",
       handleUploadUrl: "/api/upload",
       contentType: file.type,
@@ -144,18 +191,59 @@ export default function ArtifactEditPage() {
   const updateStepStatus = (
     stepId: string,
     status: SaveStep["status"],
-    error?: string
+    error?: string,
+    details?: string
   ) => {
     setSaveSteps((prev) =>
       prev.map((step) =>
-        step.id === stepId ? { ...step, status, error } : step
+        step.id === stepId ? { ...step, status, error, details } : step
       )
     );
   };
 
+  const deleteBlobs = async (urls: string[]) => {
+    if (urls.length === 0) return;
+    try {
+      await fetch("/api/delete-blob", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls }),
+      });
+    } catch (e) {
+      console.error("Failed to delete blobs", e);
+    }
+  };
+
+  // Валидация таргетов: минимальный проходной балл = 75
+  const targetValidation = useMemo(() => {
+    const MIN_QUALITY_SCORE = 75;
+    const invalidTargets = localTargets.filter(
+      (target) =>
+        target.quality_score !== undefined &&
+        target.quality_score < MIN_QUALITY_SCORE
+    );
+    const hasInvalidTargets = invalidTargets.length > 0;
+    const invalidCount = invalidTargets.length;
+
+    return {
+      isValid: !hasInvalidTargets,
+      invalidTargets,
+      invalidCount,
+      errorMessage: hasInvalidTargets
+        ? `Нельзя сохранить артефакт: ${invalidCount} таргет${invalidCount === 1 ? "" : invalidCount < 5 ? "а" : "ов"} не соответствует минимальному баллу качества (75). Удалите или замените таргеты с низким качеством.`
+        : null,
+    };
+  }, [localTargets]);
+
   const handleSave = async () => {
     if (!name.trim()) {
       setError("Название артефакта обязательно");
+      return;
+    }
+
+    // Проверяем валидность таргетов
+    if (!targetValidation.isValid) {
+      setError(targetValidation.errorMessage || "Ошибка валидации таргетов");
       return;
     }
 
@@ -186,6 +274,11 @@ export default function ArtifactEditPage() {
               .map((m) => m.id!)
               .includes(id)
         )
+      : [];
+
+    // Медиа для обновления (существующие, которые остались)
+    const mediaToUpdate = !isNew
+      ? localMedia.filter((m) => m.id && existingMediaIds.includes(m.id))
       : [];
 
     const targetsToDelete = !isNew
@@ -223,6 +316,12 @@ export default function ArtifactEditPage() {
         label: `Удаление медиа ${index + 1}`,
         status: "pending" as const,
       })),
+      ...mediaToUpdate.map((media, index) => ({
+        id: `update-media-${media.id || index}`,
+        label: `Обновление медиа: ${media.type}`,
+        status: "pending" as const,
+        details: "Обновление метаданных",
+      })),
       ...newMedia.map((media, index) => ({
         id: `media-${media.id || index}`,
         label: media.file
@@ -245,8 +344,8 @@ export default function ArtifactEditPage() {
           : "Сохранение таргета",
         status: "pending" as const,
         details: target.file
-          ? `Загрузка в Blob Storage, создание таргета и связи`
-          : `Создание связи с существующим таргетом`,
+          ? `Загрузка в Blob Storage и создание таргета`
+          : `Обновление таргета`,
       })),
     ];
 
@@ -269,10 +368,16 @@ export default function ArtifactEditPage() {
       // Загружаем превью-изображение в Blob, если оно было выбрано
       let previewImageUrlToSave: string | null = previewImageUrl;
       if (previewImageFile) {
-        updateStepStatus("preview-upload", "processing", "Загрузка файла...");
+        updateStepStatus(
+          "preview-upload",
+          "processing",
+          undefined,
+          "Загрузка файла..."
+        );
         previewImageUrlToSave = await uploadMediaToBlob(
           previewImageFile,
-          artifactId || "temp"
+          artifactId || "temp",
+          "preview"
         );
         updateStepStatus("preview-upload", "success");
       }
@@ -299,6 +404,19 @@ export default function ArtifactEditPage() {
       } else {
         // Обновляем существующий артефакт
         updateStepStatus("update-artifact", "processing");
+
+        // Если изображение изменилось, удаляем старое
+        if (
+          artifact?.preview_image_url &&
+          previewImageUrlToSave !== artifact.preview_image_url
+        ) {
+          try {
+            await deleteBlobs([artifact.preview_image_url]);
+          } catch (e) {
+            console.error("Ошибка при удалении старого превью:", e);
+          }
+        }
+
         await updateArtifact(supabase, artifactId, {
           name: name.trim(),
           description: description.trim() || null,
@@ -337,7 +455,14 @@ export default function ArtifactEditPage() {
             const stepId = `delete-media-${mediaId}`;
             updateStepStatus(stepId, "processing");
             try {
-              await deleteArtifactMedia(supabase, mediaId);
+              const deletedMediaUrl = await deleteArtifactMedia(
+                supabase,
+                mediaId,
+                true
+              );
+              if (deletedMediaUrl) {
+                await deleteBlobs([deletedMediaUrl]);
+              }
               updateStepStatus(stepId, "success");
             } catch (error) {
               updateStepStatus(
@@ -346,6 +471,31 @@ export default function ArtifactEditPage() {
                 error instanceof Error ? error.message : "Неизвестная ошибка"
               );
               throw error;
+            }
+          }
+        }
+
+        // Обновляем существующие медиа
+        if (mediaToUpdate.length > 0) {
+          for (const media of mediaToUpdate) {
+            if (!media.id) continue;
+            const stepId = `update-media-${media.id}`;
+            updateStepStatus(stepId, "processing");
+            try {
+              await updateArtifactMediaMetadata(
+                supabase,
+                media.id,
+                media.metadata || {}
+              );
+              updateStepStatus(stepId, "success");
+            } catch (error) {
+              updateStepStatus(
+                stepId,
+                "error",
+                error instanceof Error ? error.message : "Неизвестная ошибка"
+              );
+              // Не прерываем процесс сохранения из-за ошибки обновления метаданных
+              console.error("Ошибка обновления медиа:", error);
             }
           }
         }
@@ -362,15 +512,22 @@ export default function ArtifactEditPage() {
             updateStepStatus(
               stepId,
               "processing",
+              undefined,
               "Загрузка в Blob Storage..."
             );
             const blobUrl = await uploadMediaToBlob(
               media.file,
-              currentArtifactId
+              currentArtifactId,
+              media.type === "3d_model" ? "model" : "video"
             );
 
             // Добавляем в БД
-            updateStepStatus(stepId, "processing", "Сохранение в БД...");
+            updateStepStatus(
+              stepId,
+              "processing",
+              undefined,
+              "Сохранение в БД..."
+            );
             await addArtifactMedia(
               supabase,
               currentArtifactId,
@@ -381,7 +538,12 @@ export default function ArtifactEditPage() {
             updateStepStatus(stepId, "success");
           } else if (media.url) {
             // Для YouTube просто добавляем в БД
-            updateStepStatus(stepId, "processing", "Сохранение ссылки в БД...");
+            updateStepStatus(
+              stepId,
+              "processing",
+              undefined,
+              "Сохранение ссылки в БД..."
+            );
             await addArtifactMedia(
               supabase,
               currentArtifactId,
@@ -411,7 +573,13 @@ export default function ArtifactEditPage() {
           const stepId = `delete-target-${targetId}`;
           updateStepStatus(stepId, "processing");
           try {
-            await deleteArtifactTarget(supabase, targetId);
+            const deletedTargetUrl = await deleteArtifactTarget(
+              supabase,
+              targetId
+            );
+            if (deletedTargetUrl) {
+              await deleteBlobs([deletedTargetUrl]);
+            }
             updateStepStatus(stepId, "success");
           } catch (error) {
             updateStepStatus(
@@ -435,28 +603,32 @@ export default function ArtifactEditPage() {
             updateStepStatus(
               stepId,
               "processing",
+              undefined,
               "Загрузка в Blob Storage..."
             );
             const blobUrl = await uploadMediaToBlob(
               target.file,
-              currentArtifactId
+              currentArtifactId,
+              "target"
             );
 
             // Создаем таргет в БД
-            updateStepStatus(stepId, "processing", "Создание таргета в БД...");
-            const createdTarget = await createTarget(supabase, blobUrl);
-
-            // Создаем связь между артефактом и таргетом
-            updateStepStatus(stepId, "processing", "Создание связи...");
-            await addArtifactTarget(
+            updateStepStatus(
+              stepId,
+              "processing",
+              undefined,
+              "Создание таргета в БД..."
+            );
+            await createTarget(
               supabase,
               currentArtifactId,
-              createdTarget.id,
-              0
+              blobUrl,
+              target.size_cm || 10
             );
+
             updateStepStatus(stepId, "success");
           } else if (target.url) {
-            // Для существующих таргетов обычно связь уже есть
+            // Для существующих таргетов просто обновляем статус
             updateStepStatus(stepId, "success", "Таргет уже существует");
           } else {
             updateStepStatus(stepId, "error", "Таргет без файла и без URL");
@@ -502,7 +674,31 @@ export default function ArtifactEditPage() {
 
     try {
       const supabase = createClient();
-      await deleteArtifact(supabase, artifactId);
+      const { previewImageUrl, mediaUrls, targetUrls } = await deleteArtifact(
+        supabase,
+        artifactId
+      );
+
+      // Удаляем все файлы из Blob Storage
+      const urlsToDelete: string[] = [];
+      if (previewImageUrl) {
+        urlsToDelete.push(previewImageUrl);
+      }
+      urlsToDelete.push(...mediaUrls);
+      urlsToDelete.push(...targetUrls);
+
+      if (urlsToDelete.length > 0) {
+        try {
+          await deleteBlobs(urlsToDelete);
+        } catch (blobError) {
+          console.error(
+            "Ошибка при удалении файлов из Blob Storage:",
+            blobError
+          );
+          // Не прерываем процесс, так как артефакт уже удален из БД
+        }
+      }
+
       router.push("/");
       router.refresh();
     } catch (err) {
@@ -542,9 +738,9 @@ export default function ArtifactEditPage() {
           )}
         </div>
 
-        {error && (
+        {(error || targetValidation.errorMessage) && (
           <div className="mb-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive text-sm">
-            {error}
+            {error || targetValidation.errorMessage}
           </div>
         )}
 
@@ -586,11 +782,13 @@ export default function ArtifactEditPage() {
               media={localMedia}
               onMediaAdd={handleMediaAdd}
               onMediaRemove={handleMediaRemove}
+              onMediaUpdate={handleMediaUpdate}
             />
             <TargetList
               targets={localTargets}
               onTargetAdd={handleTargetAdd}
               onTargetRemove={handleTargetRemove}
+              onTargetUpdate={handleTargetUpdate}
             />
           </div>
         </div>
@@ -604,7 +802,11 @@ export default function ArtifactEditPage() {
           >
             Отмена
           </Button>
-          <Button onClick={handleSave} disabled={isSaving} icon={Save}>
+          <Button
+            onClick={handleSave}
+            disabled={isSaving || !targetValidation.isValid}
+            icon={Save}
+          >
             {isSaving ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />

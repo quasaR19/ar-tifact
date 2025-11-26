@@ -12,6 +12,7 @@ export interface LocalMediaItem {
   file?: File;
   url?: string; // для YouTube или существующих медиа
   metadata?: Record<string, unknown>;
+  display_order?: number; // порядок отображения (0 - наивысший приоритет)
 }
 
 interface MediaUploaderProps {
