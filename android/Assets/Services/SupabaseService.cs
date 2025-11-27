@@ -93,7 +93,7 @@ namespace ARArtifact.Services
         
         private IEnumerator LoadTargetsCoroutine(Action<List<TargetData>> onSuccess, Action<string> onError)
         {
-            string url = $"{config.supabaseUrl}/rest/v1/targets?select=*";
+            string url = $"{config.supabaseUrl}/rest/v1/targets?select=*,artifacts(name)";
             
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
@@ -135,6 +135,15 @@ namespace ARArtifact.Services
             public string id;
             public string url;
             public string created_at;
+            public int size_cm;
+            public string artifact_id;
+            public ArtifactData artifacts;
+        }
+
+        [Serializable]
+        public class ArtifactData
+        {
+            public string name;
         }
         
         /// <summary>

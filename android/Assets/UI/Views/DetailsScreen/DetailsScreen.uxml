@@ -1,0 +1,32 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements"
+    editor-extension-mode="False">
+    <ui:Style src="../../Styles/Theme.uss" />
+    <ui:Style src="DetailsScreen.uss" />
+
+    <ui:VisualElement name="details-screen" class="screen">
+        <ui:VisualElement name="header" class="header">
+            <ui:VisualElement class="header__left">
+                <ui:Label name="header-title" class="header__title" text="Детали артефакта" />
+            </ui:VisualElement>
+            <ui:VisualElement class="header__right">
+                <ui:Button name="close-button" class="icon-button">
+                    <ui:Label class="icon icon-close" text="×" />
+                </ui:Button>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:ScrollView name="content-scroll" class="content-scroll">
+            <ui:VisualElement class="preview-image" name="preview-image">
+                <ui:Label text="Нет превью" />
+            </ui:VisualElement>
+
+            <ui:Label text="Описание" class="section-title" />
+            <ui:Label text="Нет описания" class="description" name="description-label" />
+
+            <ui:Label text="Медиа файлы" class="section-title" />
+            <ui:VisualElement class="media-list" name="media-list">
+                <!-- Media items added dynamically -->
+            </ui:VisualElement>
+        </ui:ScrollView>
+    </ui:VisualElement>
+</ui:UXML>

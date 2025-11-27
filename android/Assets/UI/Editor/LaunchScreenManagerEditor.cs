@@ -39,22 +39,40 @@ namespace ARArtifact.UI.Editor
                 uiDocument = uiDocumentProp.objectReferenceValue as UIDocument;
             }
             
-            // Настраиваем UXML
+            // Настраиваем UXML - сначала пытаемся загрузить из Resources (оптимизация)
             if (uxmlProp.objectReferenceValue == null)
             {
+                // Пробуем загрузить из Resources
+                string resourcesPath = "Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uxml";
+                VisualTreeAsset uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(resourcesPath);
+                
+                // Если не найдено в Resources, пробуем из Assets/UI/Views (обратная совместимость)
+                if (uxml == null)
+            {
                 string uxmlPath = "Assets/UI/Views/LaunchScreen/LaunchScreen.uxml";
-                VisualTreeAsset uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(uxmlPath);
+                    uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(uxmlPath);
+                }
+                
                 if (uxml != null)
                 {
                     uxmlProp.objectReferenceValue = uxml;
                 }
             }
             
-            // Настраиваем USS
+            // Настраиваем USS - сначала пытаемся загрузить из Resources (оптимизация)
             if (ussProp.objectReferenceValue == null)
             {
+                // Пробуем загрузить из Resources
+                string resourcesPath = "Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uss";
+                StyleSheet uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(resourcesPath);
+                
+                // Если не найдено в Resources, пробуем из Assets/UI/Views (обратная совместимость)
+                if (uss == null)
+            {
                 string ussPath = "Assets/UI/Views/LaunchScreen/LaunchScreen.uss";
-                StyleSheet uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(ussPath);
+                    uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(ussPath);
+                }
+                
                 if (uss != null)
                 {
                     ussProp.objectReferenceValue = uss;
@@ -99,7 +117,7 @@ namespace ARArtifact.UI.Editor
                 if (uxmlProp.objectReferenceValue != null)
                 {
                     SerializedProperty visualTreeAssetProp = uiDocSerialized.FindProperty("m_SourceAsset");
-                    if (visualTreeAssetProp.objectReferenceValue == null)
+                    if (visualTreeAssetProp != null && visualTreeAssetProp.objectReferenceValue == null)
                     {
                         visualTreeAssetProp.objectReferenceValue = uxmlProp.objectReferenceValue as VisualTreeAsset;
                         uiDocSerialized.ApplyModifiedProperties();

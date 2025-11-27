@@ -137,7 +137,10 @@ namespace ARArtifact.Services
                             {
                                 id = target.id,
                                 url = target.url,
-                                createdAt = target.created_at
+                                createdAt = target.created_at,
+                                sizeCm = target.size_cm,
+                                artifactId = target.artifact_id,
+                                artifactName = target.artifacts?.name
                             };
                             
                             // Проверяем, есть ли уже локальное изображение для этого маркера

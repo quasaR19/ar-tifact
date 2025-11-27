@@ -122,6 +122,9 @@ namespace ARArtifact.Storage
             public string url; // Оригинальная ссылка на изображение
             public string localImagePath; // Путь к локально сохраненному изображению
             public string createdAt;
+            public int sizeCm;
+            public string artifactId;
+            public string artifactName;
         }
         
         /// <summary>

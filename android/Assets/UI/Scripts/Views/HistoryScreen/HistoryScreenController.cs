@@ -4,6 +4,7 @@ using System.IO;
 using UnityEngine;
 using UnityEngine.UIElements;
 using ARArtifact.Services;
+using ARArtifact.UI.Common;
 
 namespace ARArtifact.UI
 {
@@ -11,10 +12,9 @@ namespace ARArtifact.UI
     /// Контроллер экрана истории сканированных артефактов.
     /// Отвечает за биндинг данных, состояние загрузки и обработку кнопок.
     /// </summary>
-    public class HistoryScreenController : MonoBehaviour
+    public class HistoryScreenController : BaseScreenController
     {
         [Header("UI References")]
-        [SerializeField] private UIDocument uiDocument;
         [SerializeField] private StyleSheet styleSheet;
 
         public StyleSheet StyleSheet
@@ -23,11 +23,9 @@ namespace ARArtifact.UI
             set => styleSheet = value;
         }
 
-        public event Action OnClose;
         public event Action OnClearHistory;
+        public event Action<string> OnItemClicked;
 
-        private VisualElement root;
-        private Button closeButton;
         private Button clearButton;
         private ScrollView historyScrollView;
         private VisualElement historyContainer;
@@ -37,24 +35,11 @@ namespace ARArtifact.UI
 
         private readonly Dictionary<string, Texture2D> previewCache = new();
 
-        private void Awake()
-        {
-            if (uiDocument == null)
-            {
-                uiDocument = GetComponent<UIDocument>();
-                if (uiDocument == null)
-                {
-                    uiDocument = gameObject.AddComponent<UIDocument>();
-                    Debug.LogWarning("[HistoryScreen] UIDocument не найден, создан новый компонент");
-                }
-            }
-        }
-
         private void OnEnable()
         {
-            if (!initialized)
+            if (!initialized && _root != null)
             {
-                InitializeUI();
+                OnInitialize();
             }
         }
 
@@ -63,50 +48,59 @@ namespace ARArtifact.UI
             ClearPreviewCache();
         }
 
-        /// <summary>
-        /// Инициализирует визуальные элементы и обработчики событий.
-        /// </summary>
-        private void InitializeUI()
+        public override void Initialize(UIDocument uiDocument, string screenName = "История")
         {
-            if (uiDocument == null)
+            base.Initialize(uiDocument, screenName);
+            initialized = true;
+        }
+
+        protected override void OnInitialize()
+        {
+            if (_uiDocument == null || _root == null)
             {
-                Debug.LogError("[HistoryScreen] UIDocument не назначен, инициализация прервана");
                 return;
             }
 
-            root = uiDocument.rootVisualElement;
-            if (root == null)
+            // Подключаем стили, если они назначены
+            if (styleSheet != null)
             {
-                Debug.LogWarning("[HistoryScreen] rootVisualElement еще не доступен, повторная попытка в следующем кадре");
-                // Отложим повторную инициализацию
-                Invoke(nameof(InitializeUI), 0.1f);
-                return;
-            }
-
-            if (styleSheet != null && !root.styleSheets.Contains(styleSheet))
-            {
-                root.styleSheets.Add(styleSheet);
-            }
-
-            closeButton = root.Q<Button>("close-button");
-            clearButton = root.Q<Button>("clear-button");
-            historyScrollView = root.Q<ScrollView>("history-list");
-            historyContainer = root.Q<VisualElement>("history-container");
-            emptyState = root.Q<VisualElement>("empty-state");
-            loadingState = root.Q<VisualElement>("loading-state");
-
-            if (closeButton != null)
-            {
-                closeButton.clicked += () =>
+                if (!_root.styleSheets.Contains(styleSheet))
                 {
-                    Debug.Log("[HistoryScreen] Нажата кнопка закрытия");
-                    OnClose?.Invoke();
-                };
+                    _root.styleSheets.Add(styleSheet);
+                }
             }
             else
             {
-                Debug.LogWarning("[HistoryScreen] Кнопка закрытия не найдена");
+                // Пытаемся загрузить стили автоматически
+                styleSheet = Resources.Load<StyleSheet>("UI/Views/HistoryScreen/HistoryScreen");
+                if (styleSheet != null && !_root.styleSheets.Contains(styleSheet))
+                {
+                    _root.styleSheets.Add(styleSheet);
+                }
             }
+
+            // Header elements like title and close button are handled by BaseScreenController
+            // _closeButton.clicked += ... is already hooked up to OnCloseClicked -> OnClose
+
+            // Custom elements
+            clearButton = _root.Q<Button>("clear-button");
+            historyScrollView = _root.Q<ScrollView>("history-list");
+            if (historyScrollView != null)
+            {
+                // Устанавливаем режим вертикальной прокрутки
+                historyScrollView.mode = ScrollViewMode.Vertical;
+                // Включаем touch scrolling
+                historyScrollView.touchScrollBehavior = ScrollView.TouchScrollBehavior.Clamped;
+                // Включаем видимость вертикального скроллера
+                historyScrollView.verticalScrollerVisibility = ScrollerVisibility.Auto;
+                historyScrollView.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+                // Альтернативный способ (для старых версий Unity)
+                historyScrollView.showVertical = true;
+                historyScrollView.showHorizontal = false;
+            }
+            historyContainer = _root.Q<VisualElement>("history-container");
+            emptyState = _root.Q<VisualElement>("empty-state");
+            loadingState = _root.Q<VisualElement>("loading-state");
 
             if (clearButton != null)
             {
@@ -121,21 +115,23 @@ namespace ARArtifact.UI
                 Debug.LogWarning("[HistoryScreen] Кнопка очистки не найдена");
             }
 
-            initialized = true;
-            Hide();
+            // Не скрываем экран при инициализации - он будет показан через Show()
+            // Hide();
             ShowLoading(false);
             ShowEmptyState(true);
         }
 
-        /// <summary>
-        /// Обновляет отображение истории.
-        /// </summary>
         public void UpdateHistory(IReadOnlyList<ArtifactService.ArtifactHistoryItem> items)
         {
             if (!initialized || historyContainer == null)
             {
-                Debug.LogWarning("[HistoryScreen] Попытка обновить историю до инициализации UI");
-                return;
+                 // Try to find container if not initialized yet (e.g. if called before Initialize)
+                 if (_root != null) historyContainer = _root.Q<VisualElement>("history-container");
+                 
+                 if (historyContainer == null) {
+                     Debug.LogWarning("[HistoryScreen] Попытка обновить историю до инициализации UI");
+                     return;
+                 }
             }
 
             historyContainer.Clear();
@@ -157,31 +153,10 @@ namespace ARArtifact.UI
             Debug.Log($"[HistoryScreen] История обновлена, элементов: {items.Count}");
         }
 
-        /// <summary>
-        /// Показывает или скрывает индикатор загрузки.
-        /// </summary>
         public void ShowLoading(bool isVisible)
         {
             if (loadingState == null) return;
             loadingState.EnableInClassList("visible", isVisible);
-        }
-
-        /// <summary>
-        /// Показывает экран.
-        /// </summary>
-        public void Show()
-        {
-            if (root == null) return;
-            root.style.display = DisplayStyle.Flex;
-        }
-
-        /// <summary>
-        /// Скрывает экран.
-        /// </summary>
-        public void Hide()
-        {
-            if (root == null) return;
-            root.style.display = DisplayStyle.None;
         }
 
         private void ShowEmptyState(bool isVisible)
@@ -229,24 +204,17 @@ namespace ARArtifact.UI
             var metaLabel = new Label(metaText);
             metaLabel.AddToClassList("history-meta");
 
-            var statusLabel = new Label(item.StatusDescription ?? string.Empty);
-            statusLabel.AddToClassList("history-status");
-            switch (item.Status)
-            {
-                case ArtifactService.ArtifactHistoryStatus.Warning:
-                    statusLabel.AddToClassList("warning");
-                    break;
-                case ArtifactService.ArtifactHistoryStatus.Error:
-                    statusLabel.AddToClassList("error");
-                    break;
-            }
-
             infoElement.Add(nameLabel);
             infoElement.Add(metaLabel);
-            infoElement.Add(statusLabel);
 
             itemElement.Add(previewElement);
             itemElement.Add(infoElement);
+
+            itemElement.RegisterCallback<ClickEvent>(evt => 
+            {
+                Debug.Log($"[HistoryScreen] Нажат элемент истории: {item.TargetId}");
+                OnItemClicked?.Invoke(item.TargetId);
+            });
 
             return itemElement;
         }
@@ -303,4 +271,3 @@ namespace ARArtifact.UI
         }
     }
 }
-

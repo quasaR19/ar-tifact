@@ -1,0 +1,81 @@
+/* Specific styles for MarkersScreen */
+.header {
+  min-height: 100px;
+}
+
+.update-info {
+  flex-direction: row;
+  padding: 10px 22px;
+  align-items: center;
+}
+
+.last-update-label {
+  color: rgba(150, 150, 150, 0.7);
+  font-size: 42px;
+}
+
+.last-update-time {
+  color: rgb(200, 200, 220);
+  font-size: 42px;
+  -unity-font-style: bold;
+}
+
+.refresh-button {
+  margin: 10px 50px;
+}
+
+.loading-indicator {
+  margin: 10px 22px;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  display: none;
+}
+
+.loading-indicator.visible {
+  display: flex;
+}
+
+.loading-indicator Label {
+  color: rgb(200, 200, 220);
+  -unity-text-align: middle-center;
+  font-size: 36px;
+}
+
+/* List Styles */
+.markers-list {
+  flex-grow: 1;
+  margin: 10px 0px 0px 0px;
+}
+
+.markers-container {
+  flex-direction: row;
+  flex-wrap: wrap;
+  padding-bottom: 20px;
+  justify-content: center;
+}
+
+.marker-item {
+  border-radius: 24px;
+  width: 450px;
+  margin: 10px;
+}
+
+/* Marker Item Styles would go here if defined in separate logic, 
+   but assuming they are created dynamically or styles are simple */
+
+.empty-state {
+  flex-grow: 1;
+  justify-content: center;
+  align-items: center;
+  display: none;
+}
+
+.empty-state.visible {
+  display: flex;
+}
+
+.empty-state Label {
+  color: rgba(150, 150, 150, 0.7);
+  font-size: 18px;
+}

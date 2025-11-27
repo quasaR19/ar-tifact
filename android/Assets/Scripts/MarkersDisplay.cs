@@ -15,7 +15,7 @@ public class MarkersDisplay : MonoBehaviour
 
    public bool showGizmos = true;
    public Color gizmoColor = Color.yellow;
-   public float gizmoSize = 0.5f; // физический размер маркера
+   public float gizmoSize = 0.1f; // физический размер маркера
    public float gap = 0.2f; // расстояние между маркерами
    public int gizmosCount = 3; // количество маркеров
    public bool showNormal = true; // показывать вектор нормали
@@ -254,17 +254,13 @@ public class MarkersDisplay : MonoBehaviour
        //     Debug.LogWarning("[MarkersDisplay] Поле m_QuadMaterial не найдено");
        // }
 
-       // Обновляем физический размер, чтобы триггернуть обновление mesh и визуализации
+       // Устанавливаем физический размер маркера
        FieldInfo sizeField = typeof(SimulatedTrackedImage).GetField("m_ImagePhysicalSizeMeters", BindingFlags.NonPublic | BindingFlags.Instance);
        if (sizeField != null)
        {
-           Vector2 currentSize = (Vector2)sizeField.GetValue(trackedImage);
-           // Debug.Log($"[MarkersDisplay] Текущий размер: {currentSize}");
-           // Небольшое изменение размера, чтобы триггернуть OnValidate
-           sizeField.SetValue(trackedImage, currentSize + new Vector2(0.0001f, 0.0001f));
-           // Возвращаем обратно
-           sizeField.SetValue(trackedImage, currentSize);
-           // Debug.Log($"[MarkersDisplay] ✓ Размер обновлен для триггера OnValidate");
+           Vector2 markerSize = new Vector2(gizmoSize, gizmoSize);
+           sizeField.SetValue(trackedImage, markerSize);
+           // Debug.Log($"[MarkersDisplay] ✓ Физический размер установлен: {markerSize}");
        }
        // else
        // {

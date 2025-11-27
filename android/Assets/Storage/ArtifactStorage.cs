@@ -67,7 +67,7 @@ namespace ARArtifact.Storage
                 EnsureFolders();
                 string json = JsonUtility.ToJson(data, true);
                 File.WriteAllText(StoragePath, json, Encoding.UTF8);
-                Debug.Log($"[ArtifactStorage] Данные сохранены: {StoragePath}");
+                // Логирование удалено для оптимизации производительности
             }
             catch (Exception e)
             {
@@ -243,6 +243,7 @@ namespace ARArtifact.Storage
             public string localPath;
             public long cachedAtTicks;
             public string metadataJson;
+            public int displayOrder;
         }
 
         [Serializable]

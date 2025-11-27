@@ -2,6 +2,7 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.UIElements;
 using ARArtifact.Services;
+using ARArtifact.UI.Common;
 
 namespace ARArtifact.UI
 {
@@ -14,46 +15,28 @@ namespace ARArtifact.UI
         [SerializeField] private UIDocument uiDocument;
         [SerializeField] private VisualTreeAsset historyScreenUXML;
         [SerializeField] private StyleSheet historyScreenStyleSheet;
-        [SerializeField] private MainScreenManager mainScreenManager;
-
+        [SerializeField] private DetailsScreenManager detailsScreenManager;
 
         private HistoryScreenController historyScreenController;
-        private Coroutine applyStylesCoroutine;
-        private bool mainScreenHiddenForHistory;
 
         private void Awake()
         {
+            // НЕ выключаем gameObject - это ломает панель UIDocument!
+            // Скрытие происходит через DisplayStyle.None в Hide()
+            
             if (uiDocument == null)
             {
                 uiDocument = GetComponent<UIDocument>();
                 if (uiDocument == null)
                 {
                     uiDocument = gameObject.AddComponent<UIDocument>();
-                    Debug.LogWarning("[HistoryScreenManager] UIDocument добавлен автоматически");
                 }
             }
 
-            if (historyScreenUXML == null)
-            {
-                historyScreenUXML = Resources.Load<VisualTreeAsset>("UI/Views/HistoryScreen/HistoryScreen");
-#if UNITY_EDITOR
-                if (historyScreenUXML == null)
-                {
-                    historyScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>("Assets/UI/Views/HistoryScreen/HistoryScreen.uxml");
-                }
-#endif
-            }
-
-            if (historyScreenStyleSheet == null)
-            {
-                historyScreenStyleSheet = Resources.Load<StyleSheet>("UI/Views/HistoryScreen/HistoryScreen");
-#if UNITY_EDITOR
-                if (historyScreenStyleSheet == null)
-                {
-                    historyScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/UI/Views/HistoryScreen/HistoryScreen.uss");
-                }
-#endif
-            }
+            // Load Resources if needed (omitted for brevity, assuming assigned or handled in Controller via Base)
+            // Actually, BaseScreenController doesn't load UXML, Manager usually does.
+            if (historyScreenUXML == null) historyScreenUXML = Resources.Load<VisualTreeAsset>("UI/Views/HistoryScreen/HistoryScreen");
+            if (historyScreenStyleSheet == null) historyScreenStyleSheet = Resources.Load<StyleSheet>("UI/Views/HistoryScreen/HistoryScreen");
 
             if (historyScreenUXML != null && uiDocument.visualTreeAsset == null)
             {
@@ -70,50 +53,28 @@ namespace ARArtifact.UI
             {
                 historyScreenController.StyleSheet = historyScreenStyleSheet;
             }
-
-        }
-
-        private void OnEnable()
-        {
-            if (applyStylesCoroutine == null)
-            {
-                applyStylesCoroutine = StartCoroutine(ApplyStylesWhenReady());
-            }
         }
 
         private void Start()
         {
-            if (historyScreenController != null)
+            // Start вызывается только если gameObject активен
+            // Но мы выключили его в Awake, поэтому Start не вызовется при первом запуске
+            // Инициализацию делаем при первом Show()
+            
+            // Если gameObject активен (например, в редакторе), инициализируем сразу
+            if (gameObject.activeSelf && !_isInitialized)
             {
-                historyScreenController.OnClose += HandleCloseRequested;
-                historyScreenController.OnClearHistory += HandleClearHistory;
-                historyScreenController.Hide();
-            }
-
-            if (ArtifactService.Instance != null)
-            {
-                ArtifactService.Instance.OnHistoryChanged += HandleHistoryChanged;
-                ArtifactService.Instance.OnHistoryLoading += HandleHistoryLoading;
-                ArtifactService.Instance.OnHistoryLoadingCompleted += HandleHistoryLoadingCompleted;
-            }
-            else
-            {
-                Debug.LogWarning("[HistoryScreenManager] ArtifactService.Instance недоступен");
+                InitializeController();
             }
         }
 
         private void OnDestroy()
         {
-            if (applyStylesCoroutine != null)
-            {
-                StopCoroutine(applyStylesCoroutine);
-                applyStylesCoroutine = null;
-            }
-
             if (historyScreenController != null)
             {
                 historyScreenController.OnClose -= HandleCloseRequested;
                 historyScreenController.OnClearHistory -= HandleClearHistory;
+                historyScreenController.OnItemClicked -= HandleItemClicked;
             }
 
             if (ArtifactService.Instance != null)
@@ -122,47 +83,80 @@ namespace ARArtifact.UI
                 ArtifactService.Instance.OnHistoryLoading -= HandleHistoryLoading;
                 ArtifactService.Instance.OnHistoryLoadingCompleted -= HandleHistoryLoadingCompleted;
             }
-
-            RestoreMainScreenIfNeeded();
         }
 
-        private IEnumerator ApplyStylesWhenReady()
-        {
-            while (uiDocument == null || uiDocument.rootVisualElement == null)
-            {
-                yield return null;
-            }
-
-            if (historyScreenStyleSheet != null && !uiDocument.rootVisualElement.styleSheets.Contains(historyScreenStyleSheet))
-            {
-                uiDocument.rootVisualElement.styleSheets.Add(historyScreenStyleSheet);
-            }
-        }
-
-        /// <summary>
-        /// Показывает экран истории.
-        /// </summary>
         public void Show()
         {
-            if (historyScreenController == null)
+            if (historyScreenController == null) return;
+            
+            // НЕ трогаем gameObject.SetActive - это ломает панель UIDocument!
+            // Все экраны остаются активными, скрытие/показ через DisplayStyle
+            
+            // Инициализируем контроллер при первом показе, если еще не инициализирован
+            if (!_isInitialized)
             {
-                Debug.LogWarning("[HistoryScreenManager] Попытка показать экран без контроллера");
-                return;
+                InitializeController();
             }
-
-            historyScreenController.Show();
-            HideMainScreen();
+            
+            // Use NavigationManager if available
+            if (NavigationManager.Instance != null)
+            {
+                NavigationManager.Instance.NavigateTo(historyScreenController);
+            }
+            else
+            {
+                // Fallback
+                historyScreenController.Show();
+            }
+            
+            // Обновляем историю после показа экрана
             RefreshHistory();
         }
+        
+        private bool _isInitialized = false;
+        
+        private void InitializeController()
+        {
+            if (historyScreenController == null || _isInitialized) return;
+            
+            // НЕ трогаем gameObject.SetActive - это ломает панель UIDocument!
+            
+            // Убеждаемся, что uiDocument и root доступны
+            if (uiDocument == null)
+            {
+                uiDocument = GetComponent<UIDocument>();
+            }
+            
+            if (uiDocument != null && uiDocument.rootVisualElement == null && historyScreenUXML != null)
+            {
+                uiDocument.visualTreeAsset = historyScreenUXML;
+            }
+            
+            historyScreenController.Initialize(uiDocument, "История");
+            historyScreenController.OnClose += HandleCloseRequested;
+            historyScreenController.OnClearHistory += HandleClearHistory;
+            historyScreenController.OnItemClicked += HandleItemClicked;
+            
+            if (ArtifactService.Instance != null)
+            {
+                ArtifactService.Instance.OnHistoryChanged += HandleHistoryChanged;
+                ArtifactService.Instance.OnHistoryLoading += HandleHistoryLoading;
+                ArtifactService.Instance.OnHistoryLoadingCompleted += HandleHistoryLoadingCompleted;
+            }
+            
+            _isInitialized = true;
+        }
 
-        /// <summary>
-        /// Скрывает экран истории.
-        /// </summary>
         public void Hide()
         {
-            if (historyScreenController == null) return;
-            historyScreenController.Hide();
-            RestoreMainScreenIfNeeded();
+             if (NavigationManager.Instance != null)
+            {
+                NavigationManager.Instance.GoBack();
+            }
+            else
+            {
+                historyScreenController?.Hide();
+            }
         }
 
         private void RefreshHistory()
@@ -171,112 +165,116 @@ namespace ARArtifact.UI
             {
                 return;
             }
-
             var historyItems = ArtifactService.Instance.GetHistoryItems();
             historyScreenController.UpdateHistory(historyItems);
         }
 
         private void HandleCloseRequested()
         {
-            Hide();
-
-            var manager = ResolveMainScreenManager();
-            if (manager != null && manager.GetController() != null)
-            {
-                manager.GetController().CloseMenu();
-            }
+            // NavigationManager handles hiding via OnClose event subscribed in NavigateTo
+            // OnClose вызывает GoBack(), который скроет текущий экран и покажет предыдущий
+            // Дополнительных действий не требуется
         }
 
         private void HandleClearHistory()
         {
-            if (ArtifactService.Instance == null)
+            if (ArtifactService.Instance != null)
             {
-                Debug.LogWarning("[HistoryScreenManager] ArtifactService недоступен, очистка невозможна");
-                return;
+                ArtifactService.Instance.ClearHistoryAndCache();
             }
+        }
 
-            ArtifactService.Instance.ClearHistoryAndCache();
+        private void HandleItemClicked(string targetId)
+        {
+            if (detailsScreenManager == null) detailsScreenManager = FindFirstObjectByType<DetailsScreenManager>();
+            
+            if (detailsScreenManager != null)
+            {
+                detailsScreenManager.Show(targetId);
+            }
         }
 
         private void HandleHistoryChanged(System.Collections.Generic.IReadOnlyList<ArtifactService.ArtifactHistoryItem> historyItems)
         {
-            if (historyScreenController == null)
-            {
-                return;
-            }
-
-            historyScreenController.UpdateHistory(historyItems);
+            historyScreenController?.UpdateHistory(historyItems);
         }
 
         private void HandleHistoryLoading()
         {
-            if (historyScreenController == null)
-            {
-                return;
-            }
-
-            historyScreenController.ShowLoading(true);
+            historyScreenController?.ShowLoading(true);
         }
 
         private void HandleHistoryLoadingCompleted()
         {
-            if (historyScreenController == null)
-            {
-                return;
-            }
-
-            historyScreenController.ShowLoading(false);
+            historyScreenController?.ShowLoading(false);
         }
-
-        private void HideMainScreen()
+        
+        public HistoryScreenController GetController()
         {
-            if (mainScreenHiddenForHistory)
-            {
-                return;
-            }
-
-            var manager = ResolveMainScreenManager();
-            if (manager == null)
-            {
-                return;
-            }
-
-            manager.Hide();
-            mainScreenHiddenForHistory = true;
+            return historyScreenController;
         }
-
-        private void RestoreMainScreenIfNeeded()
+        
+        #if UNITY_EDITOR
+        /// <summary>
+        /// Перезагружает UI для горячей перезагрузки в Editor режиме
+        /// </summary>
+        public void ReloadUI()
         {
-            if (!mainScreenHiddenForHistory)
+            if (uiDocument == null || historyScreenController == null) return;
+            
+            // Сохраняем текущее состояние
+            bool wasVisible = historyScreenController.gameObject.activeSelf && 
+                             (uiDocument.rootVisualElement?.style.display == DisplayStyle.Flex);
+            
+            // В Editor режиме используем AssetDatabase для перезагрузки
+            historyScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(
+                "Assets/Resources/UI/Views/HistoryScreen/HistoryScreen.uxml");
+            historyScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>(
+                "Assets/Resources/UI/Views/HistoryScreen/HistoryScreen.uss");
+            
+            // Fallback на Resources
+            if (historyScreenUXML == null)
             {
-                return;
+                var oldUXML = historyScreenUXML;
+                if (oldUXML != null) Resources.UnloadAsset(oldUXML);
+                historyScreenUXML = Resources.Load<VisualTreeAsset>("UI/Views/HistoryScreen/HistoryScreen");
             }
-
-            var manager = ResolveMainScreenManager();
-            if (manager != null)
+            if (historyScreenStyleSheet == null)
             {
-                manager.Show();
+                var oldStyleSheet = historyScreenStyleSheet;
+                if (oldStyleSheet != null) Resources.UnloadAsset(oldStyleSheet);
+                historyScreenStyleSheet = Resources.Load<StyleSheet>("UI/Views/HistoryScreen/HistoryScreen");
             }
-
-            mainScreenHiddenForHistory = false;
+            
+            // Пересоздаем дерево элементов
+            uiDocument.visualTreeAsset = null;
+            uiDocument.visualTreeAsset = historyScreenUXML;
+            
+            // Обновляем стили
+            if (historyScreenStyleSheet != null)
+            {
+                historyScreenController.StyleSheet = historyScreenStyleSheet;
+            }
+            
+            // Переинициализируем контроллер
+            historyScreenController.Initialize(uiDocument, "История");
+            historyScreenController.OnClose += HandleCloseRequested;
+            historyScreenController.OnClearHistory += HandleClearHistory;
+            historyScreenController.OnItemClicked += HandleItemClicked;
+            
+            // Восстанавливаем видимость и данные
+            if (wasVisible)
+            {
+                historyScreenController.Show();
+                RefreshHistory();
+            }
+            else
+            {
+                historyScreenController.Hide();
+            }
+            
+            Debug.Log("[HistoryScreenManager] UI перезагружен");
         }
-
-        private MainScreenManager ResolveMainScreenManager()
-        {
-            if (mainScreenManager != null)
-            {
-                return mainScreenManager;
-            }
-
-            mainScreenManager = FindFirstObjectByType<MainScreenManager>();
-            if (mainScreenManager == null)
-            {
-                Debug.LogWarning("[HistoryScreenManager] MainScreenManager не найден в сцене");
-            }
-
-            return mainScreenManager;
-        }
-
+        #endif
     }
 }
-

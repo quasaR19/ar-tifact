@@ -1,0 +1,295 @@
+/* Хз как в uss создаются переменные, поэтому кринж:
+
+--- ОСНОВНЫЕ ФОНЫ ---
+Основной фон (Screen Background): #121212
+Самый темный цвет. Фон всего экрана.
+
+Фон Панели (Panel/Card Background): #1E1E1E
+Слегка светлее фона. Для карточек, панелей, модальных окон.
+
+Фон Элемента (Interactive Background): #2A2A2A
+Фон интерактивных элементов (например, неактивные поля ввода, вкладки).
+
+--- ОСНОВНОЙ ЦВЕТ (PRIMARY - Синий) ---
+Кнопка (Primary Button/Accent): #3B82F6
+Яркий, но не кричащий синий. Цвет основного действия.
+
+Акцент (Hover/Active/Focus): #2563EB
+Более темный синий для состояния "Нажато" или "Активно".
+
+Тень/Рамка Акцента: #1D4ED8
+Темный оттенок синего для акцентных границ или теней.
+
+--- ТЕКСТ И ИКОНКИ (TEXT & ICONS) ---
+Основной Текст (Primary Text): #E5E5E5
+Чисто белый или очень светлый серый для максимальной читаемости.
+
+Второстепенный Текст (Secondary/Muted): #B0B0B0
+Muted Text. Для подписей, метаданных, второстепенных меток.
+
+Заглушенный Текст (Placeholder/Hint): #757575
+Самый темный текст. Для текста-подсказки (placeholder) в полях ввода.
+
+Текст на Акцентном фоне (On Primary): #E5E5E5
+Цвет текста поверх синей кнопки (Primary).
+
+--- СОСТОЯНИЯ (STATUS) ---
+Успех (Success): #10B981
+Зеленый цвет для подтверждения действия.
+
+Ошибка (Error/Danger): #EF4444
+Красный цвет для ошибок и предупреждений.
+
+Предупреждение (Warning): #F59E0B
+Желтый/Оранжевый для предупреждений.
+
+*/
+
+VisualElement {
+  transition: 0.15s ease-out;
+  flex-shrink: 0;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+/* ТИПОГРАФСКАЯ ШКАЛА (x3 DPI Compensation) */
+
+/* H1: Главный заголовок экрана / Название приложения */
+.text-h1 {
+  font-size: 72px; /* 24pt * 3 */
+  -unity-font-style: bold;
+  /* Рекомендуется: font-style: normal; */
+}
+
+/* H2: Заголовки разделов / Крупные заголовки в списке */
+.text-h2 {
+  font-size: 60px; /* 20pt * 3 */
+  -unity-font-style: bold; /* Используйте 'bold' или 'bold', если ваш шрифт его поддерживает */
+  /* -unity-font-style: bold;  -- Если нет 'bold' */
+}
+
+/* Body: Обычный текст параграфов, Вводные поля */
+.text-body {
+  font-size: 48px; /* 16pt * 3 */
+  -unity-font-style: normal;
+}
+
+/* Label: Названия маленьких кнопок, Метки под иконками */
+.text-label {
+  font-size: 42px; /* 14pt * 3 */
+  -unity-font-style: normal;
+}
+
+/* Micro: Условия использования, Сноски, Метки даты и времени */
+.text-micro {
+  font-size: 36px; /* 12pt * 3 */
+  -unity-font-style: normal;
+}
+
+.font-bold {
+  -unity-font-style: bold;
+}
+
+/* Common Elements */
+.screen {
+  width: 100%;
+  height: 100%;
+  background-color: #121212;
+  flex-direction: column;
+}
+
+.screen--transparent {
+  background-color: transparent;
+}
+
+/* Header System */
+.header {
+  width: 100%;
+  height: 144px;
+  background-color: #1e1e1e;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding-left: 22px;
+  padding-right: 22px;
+  border-bottom-width: 1px;
+  border-bottom-color: rgba(29, 78, 216, 0.3);
+}
+
+.header label {
+  font-size: 66px;
+}
+
+.header__left {
+  flex-direction: row;
+  align-items: center;
+  flex-grow: 1;
+}
+
+.header__right {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.header__title {
+  font-size: 60px;
+  -unity-font-style: bold;
+  color: #e5e5e5;
+  -unity-text-align: middle-left;
+  margin-left: 8px;
+}
+
+/* Buttons */
+Button {
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  padding: 22px;
+  background-color: #3b82f6;
+  color: #e5e5e5;
+  border-color: rgba(29, 78, 216, 0.5);
+  border-radius: 12px;
+  font-size: 42px;
+}
+
+Button Label {
+  font-size: 48px;
+  height: 48px;
+}
+
+.header Button Label {
+  font-size: 66px;
+  height: 66px;
+}
+
+.button-icon {
+  font-size: 48px;
+  align-items: center;
+  justify-content: center;
+  transition: 0.1s ease-out;
+}
+
+Button:hover {
+  border-color: rgba(29, 78, 216, 0.8);
+  opacity: 0.7;
+}
+
+Button:active {
+  background-color: #2563eb;
+}
+
+/* Icons */
+.icon {
+  width: 72px;
+  height: 72px;
+  font-size: 72px;
+  color: #e5e5e5;
+  align-items: center;
+  justify-content: center;
+  -unity-text-align: middle-center;
+}
+
+/* Content Area */
+.content {
+  flex-grow: 1;
+  width: 100%;
+}
+
+/* Side Menu */
+.burger-menu-button {
+  margin-right: 24px;
+}
+
+.side-menu {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  display: none;
+}
+
+.side-menu-overlay {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  top: 0;
+  left: 0;
+}
+
+.side-menu-content {
+  position: absolute;
+  height: 100%;
+  min-width: 50%;
+  background-color: #1e1e1e;
+  left: 0;
+  top: 0;
+  flex-direction: column;
+  border-right-width: 1px;
+  border-right-color: rgba(29, 78, 216, 0.3);
+  padding: 30px;
+}
+
+.menu-header-container {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 30px;
+}
+
+.menu-title {
+  font-size: 60px;
+  margin: 0;
+  color: #e5e5e5;
+  -unity-font-style: bold;
+  -unity-text-align: middle-left;
+}
+
+.menu-close-button {
+  margin: 0;
+  position: relative;
+  top: 0;
+  right: 0;
+}
+
+.menu-items {
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.menu-item {
+  width: 100%;
+  padding: 22px;
+  background-color: #2a2a2a;
+  border-width: 1px;
+  border-color: rgba(29, 78, 216, 0.3);
+  border-radius: 12px;
+  margin-bottom: 15px;
+  padding-left: 22px;
+  padding-right: 22px;
+  flex-direction: row;
+  align-items: center;
+}
+
+.menu-item:hover {
+  background-color: #2563eb;
+  border-color: rgba(29, 78, 216, 0.5);
+}
+
+.menu-item-label {
+  font-size: 60px;
+  color: #e5e5e5;
+  -unity-text-align: middle-left;
+  flex-grow: 1;
+}
+
+/* Helper Classes */
+.hidden {
+  display: none;
+}
+
+.visible {
+  display: flex;
+}

@@ -34,9 +34,14 @@ export function TargetUploader({
 
   const handleFileSelect = useCallback(
     async (file: File) => {
-      // Проверяем, что это изображение
-      if (!file.type.startsWith("image/")) {
-        setError("Пожалуйста, выберите файл изображения");
+      // Проверяем формат файла (только jpg/jpeg/png)
+      const allowedTypes = ["image/jpeg", "image/jpg", "image/png"];
+      const fileExtension = file.name.toLowerCase().split(".").pop();
+      const isValidType = allowedTypes.includes(file.type) || 
+        (file.type.startsWith("image/") && ["jpg", "jpeg", "png"].includes(fileExtension || ""));
+      
+      if (!isValidType) {
+        setError("Поддерживаются только форматы JPG, JPEG и PNG");
         return;
       }
 
@@ -176,7 +181,7 @@ export function TargetUploader({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/jpeg,image/jpg,image/png"
         onChange={handleFileInputChange}
         className="hidden"
         disabled={isProcessing}

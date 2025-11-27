@@ -28,7 +28,7 @@ Transform:
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
+  m_ConstrainProportionsScale: 1
   m_Children:
   - {fileID: 7833691370572687095}
   m_Father: {fileID: 0}
@@ -46,13 +46,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: '::'
   modelParent: {fileID: 0}
-  distance: 0.3
-  modelScale: 0.2
+  distance: 0.05
+  modelScale: 1
   maxSizeMultiplier: 2
   spinModel: 1
-  placeholderSpinSpeed: 50
+  placeholderSpinSpeed: 100
   modelSpinSpeed: 10
-  drawGizmos: 1
+  fadeOutDelaySeconds: 3
+  fadeOutDurationSeconds: 2
+  drawGizmos: 0
   gizmoColor: {r: 1, g: 0, b: 0, a: 1}
   gizmoSize: 0.1
 --- !u!1 &2640831755913908013
@@ -84,8 +86,8 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
+  m_LocalScale: {x: 0.05, y: 0.05, z: 0.05}
+  m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 466977718394885200}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}

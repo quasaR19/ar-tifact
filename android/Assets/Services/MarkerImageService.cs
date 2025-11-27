@@ -275,7 +275,7 @@ namespace ARArtifact.Services
                 // Уничтожаем временную текстуру
                 Destroy(tempTexture);
                 
-                Debug.Log($"[MarkerImageService] Изображение загружено: {localImagePath}, размер: {finalTexture.width}x{finalTexture.height}, формат: {finalTexture.format}, readable: {finalTexture.isReadable}");
+                // Логирование удалено для оптимизации производительности
                 
                 return finalTexture;
             }

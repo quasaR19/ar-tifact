@@ -47,6 +47,11 @@ namespace ARArtifact.Services
         private ArtifactMediaService mediaService;
         private readonly Dictionary<string, ArtifactRequestOperation> activeTargetRequests = new();
 
+        // Оптимизация сохранения истории - батчинг
+        private Coroutine saveHistoryCoroutine;
+        private bool historyDirty = false;
+        private const float HistorySaveDelay = 2f; // Сохраняем историю через 2 секунды после последнего изменения
+
         private void Awake()
         {
             if (_instance != null && _instance != this)
@@ -68,9 +73,30 @@ namespace ARArtifact.Services
 
         private void OnDestroy()
         {
+            // Принудительно сохраняем историю при уничтожении
+            ForceSaveHistory();
+            
             if (_instance == this)
             {
                 _instance = null;
+            }
+        }
+        
+        private void OnApplicationPause(bool pauseStatus)
+        {
+            // Сохраняем историю при паузе приложения
+            if (pauseStatus)
+            {
+                ForceSaveHistory();
+            }
+        }
+        
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            // Сохраняем историю при потере фокуса
+            if (!hasFocus)
+            {
+                ForceSaveHistory();
             }
         }
 
@@ -95,8 +121,7 @@ namespace ARArtifact.Services
 
             if (TryGetCachedArtifact(targetId, out var cachedResult))
             {
-                Debug.Log($"{LogPrefix} Используем кеш для targetId={targetId}");
-                AppendHistoryEntry(cachedResult.ArtifactId, targetId, ArtifactHistoryStatus.Ready, "Кешированная модель готова");
+                // Не обновляем историю при каждом запросе из кеша - только при первом распознавании
                 onSuccess?.Invoke(cachedResult);
                 return;
             }
@@ -105,7 +130,7 @@ namespace ARArtifact.Services
             {
                 existingOperation.successCallbacks.Add(onSuccess);
                 existingOperation.errorCallbacks.Add(onError);
-                Debug.Log($"{LogPrefix} Запрос для targetId={targetId} объединен с существующим");
+                // Логирование удалено для оптимизации производительности
                 return;
             }
 
@@ -140,7 +165,7 @@ namespace ARArtifact.Services
                 record.previewLocalPath = null;
             }
 
-            result = BuildAvailabilityResult(record, modelMedia);
+            result = BuildAvailabilityResult(record, modelMedia, isFromCache: true);
             return true;
         }
 
@@ -216,7 +241,7 @@ namespace ARArtifact.Services
                     existingEntry.artifactId = artifactId;
                 }
 
-                Debug.Log($"{LogPrefix} Обновлена запись истории: artifact={existingEntry.artifactId}, target={targetId}, status={status}");
+                // Логирование удалено для оптимизации производительности
             }
             else
             {
@@ -231,7 +256,7 @@ namespace ARArtifact.Services
                 };
 
                 storageData.history.Add(entry);
-                Debug.Log($"{LogPrefix} Добавлена запись истории: artifact={artifactId}, target={targetId}, status={status}");
+                // Логирование удалено для оптимизации производительности
             }
 
             // ограничим историю разумным числом
@@ -243,7 +268,8 @@ namespace ARArtifact.Services
                     .ToList();
             }
 
-            SaveToDisk();
+            // Отложенное сохранение для оптимизации производительности
+            ScheduleHistorySave();
             RebuildHistoryCache(true);
         }
 
@@ -288,10 +314,10 @@ namespace ARArtifact.Services
             }
 
             string escapedTargetId = Uri.EscapeDataString(targetId);
-            string selectClause = Uri.EscapeDataString("id,artifact_id,target_id,display_priority,artifact:artifacts(*,artifact_media(media(*)))");
-            string orderClause = Uri.EscapeDataString("display_priority.asc");
-
-            string url = $"{config.supabaseUrl}/rest/v1/artifact_targets?select={selectClause}&target_id=eq.{escapedTargetId}&order={orderClause}";
+            // Запрашиваем таргет с привязанным артефактом и его медиа
+            string selectClause = Uri.EscapeDataString("id,artifact_id,artifacts(*,artifact_media(media(*)))");
+            
+            string url = $"{config.supabaseUrl}/rest/v1/targets?select={selectClause}&id=eq.{escapedTargetId}";
 
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
@@ -300,13 +326,13 @@ namespace ARArtifact.Services
                 request.SetRequestHeader("Content-Type", "application/json");
                 request.SetRequestHeader("Prefer", "return=representation");
 
-                Debug.Log($"{LogPrefix} Запрос артефактов по target_id={targetId}");
+                Debug.Log($"{LogPrefix} Запрос артефакта по target_id={targetId}");
                 yield return request.SendWebRequest();
 
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     string error = $"HTTP {request.responseCode}: {request.error}";
-                    Debug.LogError($"{LogPrefix} Ошибка загрузки артефактов: {error}");
+                    Debug.LogError($"{LogPrefix} Ошибка загрузки артефакта: {error}");
                     onError?.Invoke(error);
                     if (notifyHistoryListeners)
                     {
@@ -318,10 +344,11 @@ namespace ARArtifact.Services
                 try
                 {
                     string jsonResponse = request.downloadHandler.text;
+                    Debug.Log($"{LogPrefix} Получен JSON ответ от API (первые 500 символов): {jsonResponse.Substring(0, Math.Min(500, jsonResponse.Length))}");
                     string wrappedJson = "{\"items\":" + jsonResponse + "}";
-                    var wrapper = JsonUtility.FromJson<ArtifactTargetsWrapper>(wrappedJson);
-                    List<ArtifactRemoteEntry> entries = ConvertToRemoteEntries(wrapper?.items);
-                    Debug.Log($"{LogPrefix} Получено связей artifact_target: {entries.Count}");
+                    var wrapper = JsonUtility.FromJson<TargetArtifactWrapper>(wrappedJson);
+                    List<ArtifactRemoteEntry> entries = ConvertTargetToRemoteEntries(wrapper?.items);
+                    Debug.Log($"{LogPrefix} Получено артефактов: {entries.Count}");
                     onSuccess?.Invoke(entries);
                 }
                 catch (Exception e)
@@ -413,7 +440,7 @@ namespace ARArtifact.Services
             CompleteOperation(operation, availability);
         }
 
-        private List<ArtifactRemoteEntry> ConvertToRemoteEntries(List<ArtifactTargetDto> dtos)
+        private List<ArtifactRemoteEntry> ConvertTargetToRemoteEntries(List<TargetDto> dtos)
         {
             var result = new List<ArtifactRemoteEntry>();
             if (dtos == null)
@@ -423,43 +450,54 @@ namespace ARArtifact.Services
 
             foreach (var dto in dtos)
             {
-                if (dto == null || dto.artifact == null)
+                if (dto == null || dto.artifacts == null)
                 {
                     continue;
                 }
 
                 var remoteArtifact = new ArtifactRemoteEntry
                 {
-                    ArtifactTargetId = dto.id,
+                    ArtifactTargetId = dto.id, // В новой схеме используем ID таргета как ID связи
                     ArtifactId = dto.artifact_id,
-                    TargetId = dto.target_id,
-                    DisplayPriority = dto.display_priority,
+                    TargetId = dto.id, // ID таргета это и есть ID записи в таблице targets
+                    DisplayPriority = 0, // В новой схеме приоритета нет, считаем 0
                     Artifact = new ArtifactRemoteArtifact
                     {
-                        ArtifactId = dto.artifact.id,
-                        Name = dto.artifact.name,
-                        Description = dto.artifact.description,
-                        PreviewImageUrl = dto.artifact.preview_image_url,
-                        IsActive = dto.artifact.is_active,
+                        ArtifactId = dto.artifacts.id,
+                        Name = dto.artifacts.name,
+                        Description = dto.artifacts.description,
+                        PreviewImageUrl = dto.artifacts.preview_image_url,
+                        IsActive = dto.artifacts.is_active,
                         Media = new List<ArtifactRemoteMedia>()
                     }
                 };
 
-                if (dto.artifact.artifact_media != null)
+                if (dto.artifacts.artifact_media != null)
                 {
-                    foreach (var mediaLink in dto.artifact.artifact_media)
+                    foreach (var mediaLink in dto.artifacts.artifact_media)
                     {
                         if (mediaLink == null || mediaLink.media == null)
                         {
                             continue;
                         }
 
+                        // Получаем метаданные из media.metadata (jsonb поле)
+                        // Unity JsonUtility десериализует jsonb объект в MetadataDto
+                        string metadataJson = null;
+                        if (mediaLink.media.metadata != null)
+                        {
+                            // Сериализуем обратно в строку для хранения
+                            metadataJson = JsonUtility.ToJson(mediaLink.media.metadata);
+                        }
+                        
+                        Debug.Log($"{LogPrefix} Загружены метаданные для media {mediaLink.media.id}: '{metadataJson}' (center_model={mediaLink.media.metadata?.center_model})");
+
                         remoteArtifact.Artifact.Media.Add(new ArtifactRemoteMedia
                         {
                             MediaId = mediaLink.media.id,
                             MediaType = mediaLink.media.media_type,
                             Url = mediaLink.media.url,
-                            MetadataJson = null
+                            MetadataJson = metadataJson
                         });
                     }
                 }
@@ -467,7 +505,7 @@ namespace ARArtifact.Services
                 result.Add(remoteArtifact);
             }
 
-            return result.OrderBy(r => r.DisplayPriority).ToList();
+            return result;
         }
 
         private ArtifactRemoteEntry SelectPreferredEntry(List<ArtifactRemoteEntry> entries)
@@ -497,6 +535,7 @@ namespace ARArtifact.Services
             {
                 foreach (var media in entry.Artifact.Media)
                 {
+                    Debug.Log($"{LogPrefix} [ConvertToRecord] Медиа {media.MediaId}: metadataJson='{media.MetadataJson}'");
                     record.media.Add(new ArtifactStorage.MediaCacheRecord
                     {
                         mediaId = media.MediaId,
@@ -520,6 +559,12 @@ namespace ARArtifact.Services
                     {
                         media.localPath = persistedMedia.localPath;
                         media.cachedAtTicks = persistedMedia.cachedAtTicks;
+                        // Сохраняем метаданные из существующей записи, если в новой записи их нет
+                        // Но если в новой записи есть метаданные, они имеют приоритет
+                        if (string.IsNullOrEmpty(media.metadataJson) && !string.IsNullOrEmpty(persistedMedia.metadataJson))
+                        {
+                            media.metadataJson = persistedMedia.metadataJson;
+                        }
                     }
                 }
             }
@@ -625,7 +670,7 @@ namespace ARArtifact.Services
             media.cachedAtTicks = DateTime.UtcNow.Ticks;
         }
 
-        private ArtifactAvailabilityResult BuildAvailabilityResult(ArtifactStorage.ArtifactRecord record, ArtifactStorage.MediaCacheRecord media)
+        private ArtifactAvailabilityResult BuildAvailabilityResult(ArtifactStorage.ArtifactRecord record, ArtifactStorage.MediaCacheRecord media, bool isFromCache = false)
         {
             return new ArtifactAvailabilityResult
             {
@@ -637,7 +682,8 @@ namespace ARArtifact.Services
                     ? record.previewLocalPath
                     : null,
                 LocalModelPath = media.localPath,
-                Record = record
+                Record = record,
+                IsFromCache = isFromCache
             };
         }
 
@@ -648,7 +694,9 @@ namespace ARArtifact.Services
                 return;
             }
 
-            activeTargetRequests.Remove(operation.targetId);
+            string targetId = operation.targetId;
+            activeTargetRequests.Remove(targetId);
+            Debug.Log($"{LogPrefix} Операция для targetId={targetId} завершена, удалена из activeTargetRequests");
 
             foreach (var callback in operation.successCallbacks)
             {
@@ -670,8 +718,10 @@ namespace ARArtifact.Services
                 return;
             }
 
-            activeTargetRequests.Remove(operation.targetId);
-            AppendHistoryEntry(null, operation.targetId, ArtifactHistoryStatus.Error, error);
+            string targetId = operation.targetId;
+            activeTargetRequests.Remove(targetId);
+            Debug.Log($"{LogPrefix} Операция для targetId={targetId} завершена с ошибкой, удалена из activeTargetRequests");
+            AppendHistoryEntry(null, targetId, ArtifactHistoryStatus.Error, error);
 
             foreach (var callback in operation.errorCallbacks)
             {
@@ -751,6 +801,57 @@ namespace ARArtifact.Services
         private void SaveToDisk()
         {
             storage.SaveData(storageData ?? new ArtifactStorage.ArtifactStorageData());
+        }
+        
+        /// <summary>
+        /// Планирует отложенное сохранение истории для оптимизации производительности
+        /// </summary>
+        private void ScheduleHistorySave()
+        {
+            historyDirty = true;
+            
+            // Отменяем предыдущую корутину, если она есть
+            if (saveHistoryCoroutine != null)
+            {
+                StopCoroutine(saveHistoryCoroutine);
+            }
+            
+            // Запускаем новую корутину с задержкой
+            saveHistoryCoroutine = StartCoroutine(SaveHistoryDelayed());
+        }
+        
+        /// <summary>
+        /// Корутина для отложенного сохранения истории
+        /// </summary>
+        private IEnumerator SaveHistoryDelayed()
+        {
+            yield return new WaitForSeconds(HistorySaveDelay);
+            
+            if (historyDirty)
+            {
+                SaveToDisk();
+                historyDirty = false;
+            }
+            
+            saveHistoryCoroutine = null;
+        }
+        
+        /// <summary>
+        /// Принудительно сохраняет историю (вызывается при закрытии приложения)
+        /// </summary>
+        public void ForceSaveHistory()
+        {
+            if (saveHistoryCoroutine != null)
+            {
+                StopCoroutine(saveHistoryCoroutine);
+                saveHistoryCoroutine = null;
+            }
+            
+            if (historyDirty)
+            {
+                SaveToDisk();
+                historyDirty = false;
+            }
         }
 
         private void RebuildHistoryCache(bool notifyListeners)
@@ -833,19 +934,17 @@ namespace ARArtifact.Services
         #region DTOs
 
         [Serializable]
-        private class ArtifactTargetsWrapper
+        private class TargetArtifactWrapper
         {
-            public List<ArtifactTargetDto> items;
+            public List<TargetDto> items;
         }
 
         [Serializable]
-        private class ArtifactTargetDto
+        private class TargetDto
         {
             public string id;
             public string artifact_id;
-            public string target_id;
-            public int display_priority;
-            public ArtifactDto artifact;
+            public ArtifactDto artifacts; // JSON поле называется 'artifacts' из-за join
         }
 
         [Serializable]
@@ -874,6 +973,15 @@ namespace ARArtifact.Services
             public string id;
             public string media_type;
             public string url;
+            public MetadataDto metadata;
+        }
+
+        [Serializable]
+        private class MetadataDto
+        {
+            public bool center_model;
+            public long size;
+            public string filename;
         }
 
         #endregion
@@ -910,6 +1018,7 @@ namespace ARArtifact.Services
             public string PreviewLocalPath;
             public string LocalModelPath;
             public ArtifactStorage.ArtifactRecord Record;
+            public bool IsFromCache; // Флаг, указывающий, загружена ли модель из кэша
         }
 
         public class ArtifactRemoteEntry

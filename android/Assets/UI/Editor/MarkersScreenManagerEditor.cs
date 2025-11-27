@@ -36,22 +36,40 @@ namespace ARArtifact.UI.Editor
                 uiDocument = uiDocumentProp.objectReferenceValue as UIDocument;
             }
             
-            // Настраиваем UXML
+            // Настраиваем UXML - сначала пытаемся загрузить из Resources (оптимизация)
             if (uxmlProp.objectReferenceValue == null)
             {
-                string uxmlPath = "Assets/UI/Views/MarkersScreen/MarkersScreen.uxml";
-                VisualTreeAsset uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(uxmlPath);
+                // Пробуем загрузить из Resources
+                string resourcesPath = "Assets/Resources/UI/Views/MarkersScreen/MarkersScreen.uxml";
+                VisualTreeAsset uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(resourcesPath);
+                
+                // Если не найдено в Resources, пробуем из Assets/UI/Views (обратная совместимость)
+                if (uxml == null)
+                {
+                    string uxmlPath = "Assets/UI/Views/MarkersScreen/MarkersScreen.uxml";
+                    uxml = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(uxmlPath);
+                }
+                
                 if (uxml != null)
                 {
                     uxmlProp.objectReferenceValue = uxml;
                 }
             }
             
-            // Настраиваем USS
+            // Настраиваем USS - сначала пытаемся загрузить из Resources (оптимизация)
             if (ussProp.objectReferenceValue == null)
             {
-                string ussPath = "Assets/UI/Views/MarkersScreen/MarkersScreen.uss";
-                StyleSheet uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(ussPath);
+                // Пробуем загрузить из Resources
+                string resourcesPath = "Assets/Resources/UI/Views/MarkersScreen/MarkersScreen.uss";
+                StyleSheet uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(resourcesPath);
+                
+                // Если не найдено в Resources, пробуем из Assets/UI/Views (обратная совместимость)
+                if (uss == null)
+                {
+                    string ussPath = "Assets/UI/Views/MarkersScreen/MarkersScreen.uss";
+                    uss = AssetDatabase.LoadAssetAtPath<StyleSheet>(ussPath);
+                }
+                
                 if (uss != null)
                 {
                     ussProp.objectReferenceValue = uss;

@@ -97,8 +97,7 @@ namespace ARArtifact.Services
             OnARAvailabilityChanged?.Invoke(true);
             onComplete?.Invoke(true);
             yield break;
-#endif
-
+#else
             OnStatusChanged?.Invoke("Проверка доступности AR...");
             Debug.Log($"[ARManager] Текущее состояние ARSession: {ARSession.state}");
 
@@ -230,6 +229,7 @@ namespace ARArtifact.Services
 
             Debug.Log("[ARManager] InitializeARRoutine завершена");
             IsARInitializing = false;
+#endif
         }
 
         private void InitializeMarkerLibrary()
@@ -270,6 +270,48 @@ namespace ARArtifact.Services
             Debug.Log("[ARManager] UNITY_EDITOR: Пропускаем остановку AR");
 #endif
             IsARAvailable = false;
+        }
+        
+        /// <summary>
+        /// Включает AR камеру (для использования на MainScreen)
+        /// </summary>
+        public void EnableCamera()
+        {
+#if !UNITY_EDITOR
+            if (arSession != null && IsARAvailable)
+            {
+                Debug.Log("[ARManager] Включение AR камеры");
+                arSession.enabled = true;
+            }
+            
+            if (trackedImageManager != null && IsARAvailable)
+            {
+                trackedImageManager.enabled = true;
+            }
+#else
+            Debug.Log("[ARManager] UNITY_EDITOR: Пропускаем включение камеры");
+#endif
+        }
+        
+        /// <summary>
+        /// Отключает AR камеру (для использования на других экранах)
+        /// </summary>
+        public void DisableCamera()
+        {
+#if !UNITY_EDITOR
+            if (arSession != null)
+            {
+                Debug.Log("[ARManager] Отключение AR камеры");
+                arSession.enabled = false;
+            }
+            
+            if (trackedImageManager != null)
+            {
+                trackedImageManager.enabled = false;
+            }
+#else
+            Debug.Log("[ARManager] UNITY_EDITOR: Пропускаем отключение камеры");
+#endif
         }
     }
 }

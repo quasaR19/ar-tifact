@@ -16,7 +16,10 @@ namespace ARArtifact.Services
     public class DynamicReferenceLibrary : MonoBehaviour
     {
         private static DynamicReferenceLibrary _instance;
+        public static float MarkerSize = 0.1f;
+        
         public static DynamicReferenceLibrary Instance
+
         {
             get
             {
@@ -34,6 +37,8 @@ namespace ARArtifact.Services
         private MutableRuntimeReferenceImageLibrary mutableLibrary;
         private ARTrackedImageManager trackedImageManager;
         
+        public HashSet<string> FailedMarkerIds { get; private set; } = new HashSet<string>();
+
         public event System.Action OnLibraryCreated;
         public event System.Action<string> OnLibraryCreationFailed;
         
@@ -187,6 +192,7 @@ namespace ARArtifact.Services
             referenceGuidToTargetId.Clear();
             textureGuidToTargetId.Clear();
             referenceNameToTargetId.Clear();
+            FailedMarkerIds.Clear();
             
 #if !UNITY_EDITOR
             // На устройстве создаем mutable библиотеку через CreateRuntimeLibrary
@@ -229,6 +235,7 @@ namespace ARArtifact.Services
                 {
                     Debug.LogWarning($"[DynamicReferenceLibrary] Маркер {marker.id} не имеет локального изображения, пропускаем");
                     failCount++;
+                    FailedMarkerIds.Add(marker.id);
                     continue;
                 }
                 
@@ -239,6 +246,7 @@ namespace ARArtifact.Services
                 {
                     Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось загрузить изображение для маркера {marker.id} по пути {marker.localImagePath}");
                     failCount++;
+                    FailedMarkerIds.Add(marker.id);
                     continue;
                 }
                 
@@ -264,6 +272,7 @@ namespace ARArtifact.Services
                     {
                         Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось масштабировать изображение для маркера {marker.id}");
                         failCount++;
+                        FailedMarkerIds.Add(marker.id);
                         continue;
                     }
                 }
@@ -277,6 +286,7 @@ namespace ARArtifact.Services
                     {
                         Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось создать readable копию для маркера {marker.id}");
                         failCount++;
+                        FailedMarkerIds.Add(marker.id);
                         continue;
                     }
                     // Уничтожаем старое изображение
@@ -319,14 +329,13 @@ namespace ARArtifact.Services
                 
                 try
                 {
-                    // Используем ScheduleAddImageWithValidationJob (рекомендуемый метод)
-                    float markerSize = 0.2f; // 0.2 метра - размер маркера
-                    Debug.Log($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] Добавление маркера в библиотеку: ID={marker.id}, размер={markerSize}m, текстура={texture.width}x{texture.height}, формат={texture.format}");
+                    float physicalWidth = marker.sizeCm > 0 ? marker.sizeCm / 100f : MarkerSize;
+                    Debug.Log($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] Добавление маркера в библиотеку: ID={marker.id}, размер={physicalWidth}m (из БД: {marker.sizeCm}cm), текстура={texture.width}x{texture.height}, формат={texture.format}");
                     
                     jobState = mutableLibrary.ScheduleAddImageWithValidationJob(
                         texture, 
                         marker.id, 
-                        markerSize
+                        physicalWidth
                     );
                     jobScheduled = true;
                     Debug.Log($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✓ Job запланирован для маркера {marker.id}");
@@ -334,6 +343,7 @@ namespace ARArtifact.Services
                 catch (System.Exception e)
                 {
                     failCount++;
+                    FailedMarkerIds.Add(marker.id);
                     Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Ошибка при планировании добавления маркера {marker.id}: {e.Message}\nStackTrace: {e.StackTrace}");
                     continue;
                 }
@@ -386,6 +396,7 @@ namespace ARArtifact.Services
                         else
                         {
                             failCount++;
+                            FailedMarkerIds.Add(marker.id);
                             string errorDetails = GetErrorStatusDescription(jobState.Value.status);
                             Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗✗✗ Не удалось добавить маркер {marker.id}: {jobState.Value.status}\n{errorDetails}\nПараметры текстуры: размер={texture.width}x{texture.height}, формат={texture.format}, readable={texture.isReadable}\nПуть к файлу: {marker.localImagePath}");
                             
@@ -399,6 +410,7 @@ namespace ARArtifact.Services
                     catch (System.Exception e)
                     {
                         failCount++;
+                        FailedMarkerIds.Add(marker.id);
                         Debug.LogError($"[DynamicReferenceLibrary] Ошибка при завершении добавления маркера {marker.id}: {e.Message}");
                     }
                 }

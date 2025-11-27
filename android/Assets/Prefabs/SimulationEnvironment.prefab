@@ -78,7 +78,7 @@ Transform:
   m_GameObject: {fileID: 2215325416549028151}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: -0.7071068, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: 0.3, y: 0.1, z: -3.5}
+  m_LocalPosition: {x: 0, y: 0.1, z: -7}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -99,9 +99,9 @@ MonoBehaviour:
   markerPrefab: {fileID: 1699697471680955764, guid: 82e6c25772444054494a575d1a1105db, type: 3}
   showGizmos: 1
   gizmoColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
-  gizmoSize: 0.5
-  gap: 3
-  gizmosCount: 3
+  gizmoSize: 0.1
+  gap: 1
+  gizmosCount: 14
   showNormal: 1
   normalColor: {r: 0, g: 1, b: 0, a: 1}
 --- !u!1 &3475735057603037936
@@ -456,11 +456,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_CameraStartingPose:
-    position: {x: 0.22, y: 0.9345944, z: -0.21}
-    rotation: {x: -0.16794881, y: 0.414527, z: -0.078137435, w: -0.8909855}
+    position: {x: 0.6, y: 1, z: 0}
+    rotation: {x: 0, y: 0, z: 0, w: 1}
   m_CameraMovementBounds:
-    m_Center: {x: 0.044999838, y: 0.545, z: 0.00000011920929}
-    m_Extent: {x: 1.3000004, y: 0.5500002, z: 1.2500005}
+    m_Center: {x: 0, y: 1.2, z: 0}
+    m_Extent: {x: 1.1, y: 1, z: 6}
   m_DefaultViewPose:
     position: {x: 0, y: 1.0609863, z: -1.5}
     rotation: {x: -0.16100603, y: 0.1567927, z: -0.025916385, w: -0.97407466}

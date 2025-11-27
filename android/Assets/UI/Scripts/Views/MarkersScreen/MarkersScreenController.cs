@@ -1,19 +1,17 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using UnityEngine;
 using UnityEngine.UIElements;
+using ARArtifact.UI.Common;
 
 namespace ARArtifact.UI
 {
     /// <summary>
     /// Контроллер для экрана маркеров
     /// </summary>
-    public class MarkersScreenController : MonoBehaviour
+    public class MarkersScreenController : BaseScreenController
     {
         [Header("UI References")]
-        [SerializeField] private UIDocument uiDocument;
         [SerializeField] private StyleSheet styleSheet;
         
         public StyleSheet StyleSheet 
@@ -22,9 +20,6 @@ namespace ARArtifact.UI
             set => styleSheet = value; 
         }
         
-        private VisualElement root;
-        private VisualElement header;
-        private Button closeButton;
         private Label lastUpdateTime;
         private Button refreshButton;
         private VisualElement loadingIndicator;
@@ -33,25 +28,11 @@ namespace ARArtifact.UI
         private VisualElement emptyState;
         private readonly Dictionary<string, Texture2D> markerPreviewCache = new();
         
-        public event Action OnClose;
         public event Action OnRefresh;
-        
-        private void Awake()
-        {
-            if (uiDocument == null)
-            {
-                uiDocument = GetComponent<UIDocument>();
-            }
-            
-            if (uiDocument == null)
-            {
-                uiDocument = gameObject.AddComponent<UIDocument>();
-            }
-        }
         
         private void OnEnable()
         {
-            StartCoroutine(WaitForRootVisualElement());
+            if (_root != null) OnInitialize();
         }
 
         private void OnDestroy()
@@ -59,52 +40,64 @@ namespace ARArtifact.UI
             ClearTextureCache();
         }
         
-        private IEnumerator WaitForRootVisualElement()
+        public override void Initialize(UIDocument uiDocument, string screenName = "Маркеры")
         {
-            while (uiDocument == null || uiDocument.rootVisualElement == null)
-            {
-                yield return null;
-            }
-            
-            InitializeUI();
+            base.Initialize(uiDocument, screenName);
         }
         
-        private void InitializeUI()
+        protected override void OnInitialize()
         {
-            root = uiDocument.rootVisualElement;
+            if (_uiDocument == null || _root == null) return;
             
-            // Подключаем стили
-            if (styleSheet != null && !root.styleSheets.Contains(styleSheet))
+            // Подключаем стили, если они назначены
+            if (styleSheet != null)
             {
-                root.styleSheets.Add(styleSheet);
+                if (!_root.styleSheets.Contains(styleSheet))
+                {
+                    _root.styleSheets.Add(styleSheet);
+                }
+            }
+            else
+            {
+                // Пытаемся загрузить стили автоматически
+                styleSheet = Resources.Load<StyleSheet>("UI/Views/MarkersScreen/MarkersScreen");
+                if (styleSheet != null && !_root.styleSheets.Contains(styleSheet))
+                {
+                    _root.styleSheets.Add(styleSheet);
+                }
             }
             
             // Получаем элементы
-            header = root.Q<VisualElement>("header");
-            closeButton = root.Q<Button>("close-button");
-            lastUpdateTime = root.Q<Label>("last-update-time");
-            refreshButton = root.Q<Button>("refresh-button");
-            loadingIndicator = root.Q<VisualElement>("loading-indicator");
-            markersList = root.Q<ScrollView>("markers-list");
-            markersContainer = root.Q<VisualElement>("markers-container");
-            emptyState = root.Q<VisualElement>("empty-state");
+            // Header elements handled by BaseScreenController
+            
+            lastUpdateTime = _root.Q<Label>("last-update-time");
+            refreshButton = _root.Q<Button>("refresh-button");
+            loadingIndicator = _root.Q<VisualElement>("loading-indicator");
+            markersList = _root.Q<ScrollView>("markers-list");
+            if (markersList != null)
+            {
+                // Устанавливаем режим вертикальной прокрутки
+                markersList.mode = ScrollViewMode.Vertical;
+                // Включаем touch scrolling
+                markersList.touchScrollBehavior = ScrollView.TouchScrollBehavior.Clamped;
+                // Включаем видимость вертикального скроллера
+                markersList.verticalScrollerVisibility = ScrollerVisibility.Auto;
+                markersList.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+                // Альтернативный способ (для старых версий Unity)
+                markersList.showVertical = true;
+                markersList.showHorizontal = false;
+            }
+            markersContainer = _root.Q<VisualElement>("markers-container");
+            emptyState = _root.Q<VisualElement>("empty-state");
             
             // Настраиваем обработчики
-            if (closeButton != null)
-            {
-                closeButton.clicked += () => OnClose?.Invoke();
-            }
-            
             if (refreshButton != null)
             {
                 refreshButton.clicked += () => OnRefresh?.Invoke();
             }
             
-            // Скрываем по умолчанию (после инициализации root)
-            if (root != null)
-            {
-                root.style.display = DisplayStyle.None;
-            }
+            // Не скрываем экран при инициализации - он будет показан через Show()
+            // Hide();
         }
         
         /// <summary>
@@ -112,7 +105,11 @@ namespace ARArtifact.UI
         /// </summary>
         public void UpdateMarkers(List<Storage.MarkerStorage.MarkerData> markers)
         {
-            if (markersContainer == null) return;
+            if (markersContainer == null) 
+            {
+                if (_root != null) markersContainer = _root.Q<VisualElement>("markers-container");
+                if (markersContainer == null) return;
+            }
             
             markersContainer.Clear();
             
@@ -129,8 +126,6 @@ namespace ARArtifact.UI
                 VisualElement markerItem = new VisualElement();
                 markerItem.AddToClassList("marker-item");
                 
-                // Делаем элемент квадратным (aspect-ratio не поддерживается в UI Toolkit)
-                // Используем RegisterCallback для установки height равным width после измерения
                 markerItem.RegisterCallback<GeometryChangedEvent>(evt =>
                 {
                     if (evt.newRect.width > 0)
@@ -138,8 +133,13 @@ namespace ARArtifact.UI
                         markerItem.style.height = evt.newRect.width;
                     }
                 });
+
+                // Проверяем, является ли маркер failed
+                if (_failedMarkerIds.Contains(marker.id))
+                {
+                    markerItem.AddToClassList("failed");
+                }
                 
-                // Загружаем изображение маркера
                 if (!string.IsNullOrEmpty(marker.localImagePath))
                 {
                     Texture2D texture = TryGetMarkerTexture(marker.localImagePath);
@@ -164,9 +164,6 @@ namespace ARArtifact.UI
             }
         }
         
-        /// <summary>
-        /// Обновляет дату последнего обновления
-        /// </summary>
         public void UpdateLastUpdateTime(DateTime lastUpdate)
         {
             if (lastUpdateTime == null) return;
@@ -177,15 +174,11 @@ namespace ARArtifact.UI
             }
             else
             {
-                // Конвертируем UTC в локальное время
                 DateTime localTime = lastUpdate.ToLocalTime();
                 lastUpdateTime.text = localTime.ToString("dd.MM.yyyy HH:mm:ss");
             }
         }
         
-        /// <summary>
-        /// Показывает индикатор загрузки
-        /// </summary>
         public void ShowLoading(bool show)
         {
             if (loadingIndicator == null) return;
@@ -205,9 +198,6 @@ namespace ARArtifact.UI
             }
         }
         
-        /// <summary>
-        /// Показывает сообщение об отсутствии маркеров
-        /// </summary>
         private void ShowEmptyState()
         {
             if (emptyState != null)
@@ -220,9 +210,6 @@ namespace ARArtifact.UI
             }
         }
         
-        /// <summary>
-        /// Скрывает сообщение об отсутствии маркеров
-        /// </summary>
         private void HideEmptyState()
         {
             if (emptyState != null)
@@ -235,78 +222,45 @@ namespace ARArtifact.UI
             }
         }
         
-        /// <summary>
-        /// Показывает экран
-        /// </summary>
-        public void Show()
+        // Методы для установки данных из Manager
+        public void SetMarkerTexture(string path, Texture2D texture)
         {
-            if (root != null)
+            if (string.IsNullOrEmpty(path) || texture == null) return;
+            
+            if (!markerPreviewCache.ContainsKey(path) || markerPreviewCache[path] == null)
             {
-                root.style.display = DisplayStyle.Flex;
+                markerPreviewCache[path] = texture;
             }
         }
         
-        /// <summary>
-        /// Скрывает экран
-        /// </summary>
-        public void Hide()
+        public void SetFailedMarkerIds(System.Collections.Generic.HashSet<string> failedIds)
         {
-            if (root != null)
-            {
-                root.style.display = DisplayStyle.None;
-            }
+            // Сохраняем для использования при обновлении маркеров
+            _failedMarkerIds = failedIds ?? new System.Collections.Generic.HashSet<string>();
         }
-
+        
+        private System.Collections.Generic.HashSet<string> _failedMarkerIds = new System.Collections.Generic.HashSet<string>();
+        
         private Texture2D TryGetMarkerTexture(string path)
         {
-            if (string.IsNullOrEmpty(path))
-            {
-                return null;
-            }
+            if (string.IsNullOrEmpty(path)) return null;
 
             if (markerPreviewCache.TryGetValue(path, out var cachedTexture) && cachedTexture != null)
             {
                 return cachedTexture;
             }
 
-            if (!System.IO.File.Exists(path))
-            {
-                Debug.LogWarning($"[MarkersScreen] Локальный файл маркера не найден: {path}");
-                return null;
-            }
-
-            var service = Services.MarkerImageService.Instance;
-            if (service == null)
-            {
-                Debug.LogWarning("[MarkersScreen] MarkerImageService недоступен");
-                return null;
-            }
-
-            var texture = service.LoadLocalImage(path);
-            if (texture != null)
-            {
-                markerPreviewCache[path] = texture;
-            }
-            else
-            {
-                Debug.LogWarning($"[MarkersScreen] Не удалось загрузить изображение маркера: {path}");
-            }
-
-            return texture;
+            return null; // Текстура должна быть загружена через Manager
         }
 
         private void ClearTextureCache()
         {
             foreach (var texture in markerPreviewCache.Values)
             {
-                if (texture != null)
-                {
-                    Destroy(texture);
-                }
+                if (texture != null) Destroy(texture);
             }
 
             markerPreviewCache.Clear();
         }
     }
 }
-

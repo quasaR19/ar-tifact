@@ -162,6 +162,9 @@ namespace ARArtifact.UI
         /// </summary>
         public void Show()
         {
+            // НЕ трогаем gameObject.SetActive - это ломает панель UIDocument!
+            // Все экраны остаются активными, скрытие/показ через DisplayStyle
+            
             if (root != null)
             {
                 root.style.display = DisplayStyle.Flex;
@@ -177,6 +180,9 @@ namespace ARArtifact.UI
             {
                 root.style.display = DisplayStyle.None;
             }
+            
+            // НЕ отключаем gameObject - это ломает панель UIDocument!
+            // Скрытие уже сделано через DisplayStyle.None выше
         }
     }
 }

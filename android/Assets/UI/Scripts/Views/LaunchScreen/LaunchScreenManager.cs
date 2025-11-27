@@ -52,27 +52,45 @@ namespace ARArtifact.UI
             }
             
             // Автоматически загружаем UXML если он не назначен
+            // Сначала пытаемся загрузить из Resources (основной источник)
             if (launchScreenUXML == null)
             {
                 launchScreenUXML = Resources.Load<VisualTreeAsset>("UI/Views/LaunchScreen/LaunchScreen");
+                
+                // Fallback для редактора (только если не найдено в Resources)
                 if (launchScreenUXML == null)
                 {
-                    // Пытаемся загрузить через AssetDatabase (только в редакторе)
                     #if UNITY_EDITOR
-                    launchScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>("Assets/UI/Views/LaunchScreen/LaunchScreen.uxml");
+                    // Пробуем загрузить из Resources через AssetDatabase
+                    launchScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>("Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uxml");
+                    
+                    // Последний fallback - из Assets/UI/Views (обратная совместимость)
+                    if (launchScreenUXML == null)
+                    {
+                        launchScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>("Assets/UI/Views/LaunchScreen/LaunchScreen.uxml");
+                    }
                     #endif
                 }
             }
             
             // Автоматически загружаем StyleSheet если он не назначен
+            // Сначала пытаемся загрузить из Resources (основной источник)
             if (launchScreenStyleSheet == null)
             {
                 launchScreenStyleSheet = Resources.Load<StyleSheet>("UI/Views/LaunchScreen/LaunchScreen");
+                
+                // Fallback для редактора (только если не найдено в Resources)
                 if (launchScreenStyleSheet == null)
                 {
-                    // Пытаемся загрузить через AssetDatabase (только в редакторе)
                     #if UNITY_EDITOR
-                    launchScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/UI/Views/LaunchScreen/LaunchScreen.uss");
+                    // Пробуем загрузить из Resources через AssetDatabase
+                    launchScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uss");
+                    
+                    // Последний fallback - из Assets/UI/Views (обратная совместимость)
+                    if (launchScreenStyleSheet == null)
+                    {
+                        launchScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/UI/Views/LaunchScreen/LaunchScreen.uss");
+                    }
                     #endif
                 }
             }
@@ -171,10 +189,14 @@ namespace ARArtifact.UI
             {
                 UpdateStatus("Готово!");
                 yield return new WaitForSeconds(0.5f);
-                HideLaunchScreen();
                 
                 // Показываем главный экран
                 ShowMainScreen();
+                
+                // Скрываем LaunchScreen после перехода на MainScreen
+                yield return new WaitForSeconds(0.1f); // Небольшая задержка для завершения показа MainScreen
+                HideLaunchScreen();
+                // НЕ отключаем gameObject - это ломает панель UIDocument!
             }
         }
 
@@ -336,5 +358,82 @@ namespace ARArtifact.UI
                 Debug.LogWarning("[LaunchScreen] MainScreenManager не найден. Главный экран не будет отображен.");
             }
         }
+        
+        #if UNITY_EDITOR
+        /// <summary>
+        /// Перезагружает UI для горячей перезагрузки в Editor режиме
+        /// </summary>
+        public void ReloadUI()
+        {
+            if (uiDocument == null || launchScreenController == null) return;
+            
+            // Сохраняем текущее состояние
+            bool wasVisible = launchScreenController.gameObject.activeSelf && 
+                             (uiDocument.rootVisualElement?.style.display == DisplayStyle.Flex);
+            
+            // В Editor режиме используем AssetDatabase для перезагрузки
+            launchScreenUXML = UnityEditor.AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(
+                "Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uxml");
+            launchScreenStyleSheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>(
+                "Assets/Resources/UI/Views/LaunchScreen/LaunchScreen.uss");
+            
+            // Fallback на Resources
+            if (launchScreenUXML == null)
+            {
+                var oldUXML = launchScreenUXML;
+                if (oldUXML != null) Resources.UnloadAsset(oldUXML);
+                launchScreenUXML = Resources.Load<VisualTreeAsset>("UI/Views/LaunchScreen/LaunchScreen");
+            }
+            if (launchScreenStyleSheet == null)
+            {
+                var oldStyleSheet = launchScreenStyleSheet;
+                if (oldStyleSheet != null) Resources.UnloadAsset(oldStyleSheet);
+                launchScreenStyleSheet = Resources.Load<StyleSheet>("UI/Views/LaunchScreen/LaunchScreen");
+            }
+            
+            // Пересоздаем дерево элементов
+            uiDocument.visualTreeAsset = null;
+            uiDocument.visualTreeAsset = launchScreenUXML;
+            
+            // Обновляем стили
+            if (launchScreenStyleSheet != null)
+            {
+                launchScreenController.StyleSheet = launchScreenStyleSheet;
+            }
+            
+            // Переинициализируем контроллер (через корутину, так как он использует WaitAndApplyStyles)
+            StartCoroutine(WaitAndReloadController(wasVisible));
+            
+            Debug.Log("[LaunchScreenManager] UI перезагружен");
+        }
+        
+        private IEnumerator WaitAndReloadController(bool wasVisible)
+        {
+            // Ждем, пока rootVisualElement станет доступен
+            while (uiDocument == null || uiDocument.rootVisualElement == null)
+            {
+                yield return null;
+            }
+            
+            // Применяем стили
+            if (launchScreenStyleSheet != null && uiDocument != null && uiDocument.rootVisualElement != null)
+            {
+                if (!uiDocument.rootVisualElement.styleSheets.Contains(launchScreenStyleSheet))
+                {
+                    uiDocument.rootVisualElement.styleSheets.Add(launchScreenStyleSheet);
+                }
+            }
+            
+            // Восстанавливаем видимость
+            if (wasVisible)
+            {
+                launchScreenController.Show();
+            }
+            else
+            {
+                launchScreenController.Hide();
+            }
+        }
+        #endif
     }
 }

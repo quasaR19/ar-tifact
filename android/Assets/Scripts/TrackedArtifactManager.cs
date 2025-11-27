@@ -1,13 +1,12 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Linq;
 using ARArtifact.Services;
 using ARArtifact.Simulation;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
-using UnityGLTF;
 
 /// <summary>
 /// Управляет подменой плейсхолдеров на загруженные GLB модели при распознавании маркеров.
@@ -21,11 +20,18 @@ public class TrackedArtifactManager : MonoBehaviour
     [SerializeField] private bool verboseLogging = true;
 
     private ArtifactService artifactService;
+    private ModelSceneManager modelSceneManager;
     private readonly Dictionary<TrackableId, TrackedArtifactInstance> trackedInstances = new();
+    
+    // Кеш для хостов по trackableId для оптимизации производительности
+    private readonly Dictionary<TrackableId, TrackedModelHost> hostCache = new();
     
     // События для уведомления о распознавании таргетов
     public event System.Action<string> OnTargetRecognized; // targetId
-    public event System.Action<string, string> OnArtifactFound; // targetId, artifactName
+    public event System.Action<string> OnTargetLost; // targetId
+    public event System.Action<string, string> OnArtifactFound; // targetId, artifactName (legacy, для обратной совместимости)
+    public event System.Action<string, string, string> OnArtifactFoundWithId; // targetId, artifactId, artifactName
+    public event System.Action<string, bool> OnTargetPinStateChanged; // targetId, isPinned
 
     private void Awake()
     {
@@ -35,6 +41,7 @@ public class TrackedArtifactManager : MonoBehaviour
         }
 
         artifactService = ArtifactService.Instance;
+        modelSceneManager = ARArtifact.Services.ModelSceneManager.Instance;
     }
 
     private void OnEnable()
@@ -42,11 +49,11 @@ public class TrackedArtifactManager : MonoBehaviour
         if (trackedImageManager != null)
         {
             trackedImageManager.trackablesChanged.AddListener(OnTrackedImagesChanged);
-            Debug.Log($"{LogPrefix} ARTrackedImageManager подключен, трекинг изображений активирован");
+            // Debug.Log($"{LogPrefix} ARTrackedImageManager подключен, трекинг изображений активирован");
         }
         else
         {
-            Debug.LogError($"{LogPrefix} ARTrackedImageManager не назначен");
+            // Debug.LogError($"{LogPrefix} ARTrackedImageManager не назначен");
         }
     }
 
@@ -59,11 +66,10 @@ public class TrackedArtifactManager : MonoBehaviour
 
         foreach (var kvp in trackedInstances)
         {
-            if (kvp.Value.LoadCoroutine != null)
+            if (kvp.Value.Host != null)
             {
-                StopCoroutine(kvp.Value.LoadCoroutine);
+                kvp.Value.Host.ResetToPlaceholder();
             }
-            kvp.Value.Host?.ResetToPlaceholder();
         }
 
         trackedInstances.Clear();
@@ -71,34 +77,40 @@ public class TrackedArtifactManager : MonoBehaviour
 
     private void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> args)
     {
-        Debug.Log($"{LogPrefix} [КАМЕРА] Изменения в трекинге: добавлено={args.added.Count}, обновлено={args.updated.Count}, удалено={args.removed.Count}");
+        // Debug.Log($"{LogPrefix} [КАМЕРА] Изменения в трекинге: добавлено={args.added.Count}, обновлено={args.updated.Count}, удалено={args.removed.Count}");
         
         foreach (var trackedImage in args.added)
         {
-            Debug.Log($"{LogPrefix} [КАМЕРА] Таргет добавлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
+            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет добавлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
             HandleTrackedImage(trackedImage);
         }
 
         foreach (var trackedImage in args.updated)
         {
-            Debug.Log($"{LogPrefix} [КАМЕРА] Таргет обновлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
+            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет обновлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
             HandleTrackedImage(trackedImage);
         }
 
         foreach (var removed in args.removed)
         {
-            Debug.Log($"{LogPrefix} [КАМЕРА] Таргет удален: TrackableId={removed.Key}");
+            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет удален: TrackableId={removed.Key}");
             if (trackedInstances.TryGetValue(removed.Key, out var instance))
             {
-                if (instance.LoadCoroutine != null)
+                if (!string.IsNullOrEmpty(instance.TargetId))
                 {
-                    StopCoroutine(instance.LoadCoroutine);
+                    OnTargetLost?.Invoke(instance.TargetId);
                 }
-                instance.LoadCoroutine = null;
-                instance.LoadingTargetId = null;
-                instance.Host?.ResetToPlaceholder();
+
+                if (instance.Host != null)
+                {
+                    instance.Host.ResetToPlaceholder();
+                }
                 trackedInstances.Remove(removed.Key);
             }
+            
+            // Очищаем кеш при удалении таргета
+            hostCache.Remove(removed.Key);
+            targetSizeCache.Remove(removed.Key);
         }
     }
 
@@ -106,27 +118,27 @@ public class TrackedArtifactManager : MonoBehaviour
     {
         if (trackedImage == null)
         {
-            Debug.LogWarning($"{LogPrefix} HandleTrackedImage: trackedImage == null");
+            // Debug.LogWarning($"{LogPrefix} HandleTrackedImage: trackedImage == null");
             return;
         }
 
         bool isTracking = trackedImage.trackingState == TrackingState.Tracking;
         bool isNewInstance = !trackedInstances.TryGetValue(trackedImage.trackableId, out var instance);
-        bool shouldLogInfo = isTracking && (isNewInstance || !instance.HasLoggedTargetInfo);
+        bool shouldLogInfo = verboseLogging && isTracking && (isNewInstance || !instance.HasLoggedTargetInfo);
 
         if (shouldLogInfo)
         {
-            Debug.Log($"{LogPrefix} [ТРЕКИНГ НАЧАТ] TrackableId={trackedImage.trackableId}");
+            // Debug.Log($"{LogPrefix} [ТРЕКИНГ НАЧАТ] TrackableId={trackedImage.trackableId}");
             
             if (trackedImage.referenceImage != null)
             {
-                Debug.Log($"{LogPrefix} ReferenceImage.name: '{trackedImage.referenceImage.name}'");
-                Debug.Log($"{LogPrefix} ReferenceImage.guid: {trackedImage.referenceImage.guid}");
-                Debug.Log($"{LogPrefix} ReferenceImage.textureGuid: {trackedImage.referenceImage.textureGuid}");
+                // Debug.Log($"{LogPrefix} ReferenceImage.name: '{trackedImage.referenceImage.name}'");
+                // Debug.Log($"{LogPrefix} ReferenceImage.guid: {trackedImage.referenceImage.guid}");
+                // Debug.Log($"{LogPrefix} ReferenceImage.textureGuid: {trackedImage.referenceImage.textureGuid}");
             }
             else
             {
-                Debug.LogWarning($"{LogPrefix} ReferenceImage == null!");
+                // Debug.LogWarning($"{LogPrefix} ReferenceImage == null!");
             }
         }
 
@@ -134,14 +146,14 @@ public class TrackedArtifactManager : MonoBehaviour
         
         if (shouldLogInfo)
         {
-            Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Resolved targetId: '{targetId}'");
+            // Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Resolved targetId: '{targetId}'");
         }
         
         if (string.IsNullOrEmpty(targetId))
         {
             if (shouldLogInfo)
             {
-                Debug.LogWarning($"{LogPrefix} [РАСПОЗНАНИЕ] targetId пуст, пропускаем объект {trackedImage.trackableId}");
+                // Debug.LogWarning($"{LogPrefix} [РАСПОЗНАНИЕ] targetId пуст, пропускаем объект {trackedImage.trackableId}");
             }
             return;
         }
@@ -149,7 +161,7 @@ public class TrackedArtifactManager : MonoBehaviour
         // Уведомляем о распознавании таргета
         if (isNewInstance && isTracking)
         {
-            Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Таргет распознан: targetId='{targetId}'");
+            // Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Таргет распознан: targetId='{targetId}'");
             OnTargetRecognized?.Invoke(targetId);
         }
 
@@ -162,13 +174,13 @@ public class TrackedArtifactManager : MonoBehaviour
                 Host = ResolveHost(trackedImage, targetId),
                 HasLoggedTargetInfo = false
             };
-            trackedInstances[trackedImage.trackableId] = instance;
+        trackedInstances[trackedImage.trackableId] = instance;
         }
         else
         {
             if (!string.Equals(instance.TargetId, targetId, StringComparison.Ordinal))
             {
-                Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Старый: '{instance.TargetId}', Новый: '{targetId}'");
+                // Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Старый: '{instance.TargetId}', Новый: '{targetId}'");
             }
             
             instance.TrackedImage = trackedImage;
@@ -179,8 +191,8 @@ public class TrackedArtifactManager : MonoBehaviour
             }
             else
             {
-                // Обновляем размер таргета при обновлении трекинга
-                UpdateHostTargetSize(instance.Host, trackedImage);
+                // Обновляем размер таргета при обновлении трекинга (только если изменился)
+                UpdateHostTargetSizeIfNeeded(instance.Host, trackedImage);
             }
         }
 
@@ -188,12 +200,21 @@ public class TrackedArtifactManager : MonoBehaviour
         {
             if (shouldLogInfo)
             {
-                Debug.LogWarning($"{LogPrefix} Не удалось найти TrackedModelHost для маркера {targetId}");
+                // Debug.LogWarning($"{LogPrefix} Не удалось найти TrackedModelHost для маркера {targetId}");
             }
             return;
         }
 
         instance.Host.SetTrackingActive(isTracking);
+
+        if (!isTracking)
+        {
+            OnTargetLost?.Invoke(targetId);
+        }
+        else
+        {
+            OnTargetRecognized?.Invoke(targetId);
+        }
 
         if (shouldLogInfo)
         {
@@ -210,26 +231,49 @@ public class TrackedArtifactManager : MonoBehaviour
 
     private TrackedModelHost ResolveHost(ARTrackedImage trackedImage, string targetId)
     {
+        // Проверяем кеш
+        if (hostCache.TryGetValue(trackedImage.trackableId, out var cachedHost))
+        {
+            if (cachedHost != null)
+            {
+                // Обновляем размер только если изменился
+                UpdateHostTargetSizeIfNeeded(cachedHost, trackedImage);
+                return cachedHost;
+            }
+            else
+            {
+                // Хост был уничтожен, удаляем из кеша
+                hostCache.Remove(trackedImage.trackableId);
+            }
+        }
+        
+        // Ищем существующий хост
         var host = trackedImage.GetComponentInChildren<TrackedModelHost>();
         if (host != null)
         {
-            UpdateHostTargetSize(host, trackedImage);
+            UpdateHostTargetSizeIfNeeded(host, trackedImage);
+            hostCache[trackedImage.trackableId] = host; // Кешируем
             return host;
         }
 
         if (trackedModelHostPrefab == null)
         {
-            Debug.LogWarning($"{LogPrefix} Prefab TrackedModelHost не назначен, а существующий не найден");
+            // Debug.LogWarning($"{LogPrefix} Prefab TrackedModelHost не назначен, а существующий не найден");
             return null;
         }
 
+        // Создаем новый хост
         var hostInstance = Instantiate(trackedModelHostPrefab, trackedImage.transform);
         hostInstance.name = $"TrackedModelHost_{targetId}";
-        UpdateHostTargetSize(hostInstance, trackedImage);
+        UpdateHostTargetSizeIfNeeded(hostInstance, trackedImage);
+        hostCache[trackedImage.trackableId] = hostInstance; // Кешируем
         return hostInstance;
     }
 
-    private void UpdateHostTargetSize(TrackedModelHost host, ARTrackedImage trackedImage)
+    // Кеш размеров таргетов для оптимизации
+    private readonly Dictionary<TrackableId, float> targetSizeCache = new();
+    
+    private void UpdateHostTargetSizeIfNeeded(TrackedModelHost host, ARTrackedImage trackedImage)
     {
         if (host == null || trackedImage == null)
         {
@@ -241,12 +285,36 @@ public class TrackedArtifactManager : MonoBehaviour
         if (imageSize.x == 0 || imageSize.y == 0)
         {
             // Если размер не определен, используем размер из referenceImage
-            imageSize = trackedImage.referenceImage.size;
+            if (trackedImage.referenceImage != null)
+            {
+                imageSize = trackedImage.referenceImage.size;
+            }
+            else
+            {
+                return; // Не можем определить размер
+            }
         }
 
         // Используем максимальный размер (диагональ) для ограничения модели
         float targetSize = Mathf.Max(imageSize.x, imageSize.y);
+        
+        // Проверяем кеш - обновляем только если размер изменился
+        if (targetSizeCache.TryGetValue(trackedImage.trackableId, out var cachedSize))
+        {
+            if (Mathf.Approximately(cachedSize, targetSize))
+            {
+                return; // Размер не изменился, пропускаем обновление
+            }
+        }
+        
         host.SetTargetSize(targetSize);
+        targetSizeCache[trackedImage.trackableId] = targetSize; // Обновляем кеш
+    }
+    
+    // Старый метод для обратной совместимости
+    private void UpdateHostTargetSize(TrackedModelHost host, ARTrackedImage trackedImage)
+    {
+        UpdateHostTargetSizeIfNeeded(host, trackedImage);
     }
 
     private string ResolveTargetIdFromTrackedImage(ARTrackedImage trackedImage, bool shouldLogInfo = false)
@@ -255,7 +323,7 @@ public class TrackedArtifactManager : MonoBehaviour
         {
             if (shouldLogInfo)
             {
-                Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: trackedImage == null");
+                // Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: trackedImage == null");
             }
             return null;
         }
@@ -264,20 +332,20 @@ public class TrackedArtifactManager : MonoBehaviour
         {
             if (shouldLogInfo)
             {
-                Debug.Log($"{LogPrefix} ✓ Resolved targetId via simulation registry: '{simulationTargetId}'");
+                // Debug.Log($"{LogPrefix} ✓ Resolved targetId via simulation registry: '{simulationTargetId}'");
             }
             return simulationTargetId;
         }
         else if (shouldLogInfo && Application.isEditor)
         {
-             Debug.LogWarning($"{LogPrefix} SimulationMarkerRegistry MISS for TrackableId={trackedImage.trackableId}. Fallback to library lookup.");
+             // Debug.LogWarning($"{LogPrefix} SimulationMarkerRegistry MISS for TrackableId={trackedImage.trackableId}. Fallback to library lookup.");
         }
 
         if (trackedImage.referenceImage == null)
         {
             if (shouldLogInfo)
             {
-                Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: referenceImage == null");
+                // Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: referenceImage == null");
             }
             return null;
         }
@@ -291,7 +359,7 @@ public class TrackedArtifactManager : MonoBehaviour
         {
             if (shouldLogInfo)
             {
-                Debug.LogError($"{LogPrefix} DynamicReferenceLibrary.Instance == null, используем fallback");
+                // Debug.LogError($"{LogPrefix} DynamicReferenceLibrary.Instance == null, используем fallback");
             }
         }
         else
@@ -300,7 +368,7 @@ public class TrackedArtifactManager : MonoBehaviour
             {
                 if (shouldLogInfo)
                 {
-                    Debug.Log($"{LogPrefix} ✓ Resolved targetId via library: '{resolved}'");
+                    // Debug.Log($"{LogPrefix} ✓ Resolved targetId via library: '{resolved}'");
                 }
                 return resolved;
             }
@@ -308,8 +376,8 @@ public class TrackedArtifactManager : MonoBehaviour
             {
                 if (shouldLogInfo)
                 {
-                    Debug.LogWarning($"{LogPrefix} ✗ Не удалось разрешить targetId через library");
-                    Debug.Log($"{LogPrefix} Проверяем все доступные маппинги в библиотеке...");
+                    // Debug.LogWarning($"{LogPrefix} ✗ Не удалось разрешить targetId через library");
+                    // Debug.Log($"{LogPrefix} Проверяем все доступные маппинги в библиотеке...");
                     library.LogAllMappings();
                 }
             }
@@ -318,9 +386,64 @@ public class TrackedArtifactManager : MonoBehaviour
         var fallback = referenceName;
         if (shouldLogInfo)
         {
-            Debug.LogWarning($"{LogPrefix} ⚠️ Используем fallback: referenceImage.name = '{fallback}'");
+            // Debug.LogWarning($"{LogPrefix} ⚠️ Используем fallback: referenceImage.name = '{fallback}'");
         }
         return fallback;
+    }
+    
+    public bool TogglePinForTarget(string targetId)
+    {
+        Debug.Log($"{LogPrefix} TogglePinForTarget: targetId={targetId}, trackedInstances.Count={trackedInstances.Count}");
+        
+        var instance = FindInstanceByTargetId(targetId);
+        if (instance == null)
+        {
+            Debug.LogWarning($"{LogPrefix} TogglePinForTarget: Instance не найден для targetId={targetId}");
+            // Выводим все доступные targetId для отладки
+            foreach (var kvp in trackedInstances)
+            {
+                if (kvp.Value != null)
+                {
+                    Debug.Log($"{LogPrefix} Доступный instance: targetId={kvp.Value.TargetId}, Host={kvp.Value.Host != null}");
+                }
+            }
+            return false;
+        }
+        
+        if (instance.Host == null)
+        {
+            Debug.LogWarning($"{LogPrefix} TogglePinForTarget: Host == null для targetId={targetId}, TrackedImage={instance.TrackedImage != null}");
+            return false;
+        }
+        
+        Debug.Log($"{LogPrefix} TogglePinForTarget: Найден instance для targetId={targetId}, Host существует, текущее состояние isPinned={instance.Host.IsPinned}");
+        
+        bool newState = instance.Host.TogglePinned();
+        OnTargetPinStateChanged?.Invoke(targetId, newState);
+        return newState;
+    }
+    
+    public bool TrySetPinState(string targetId, bool shouldPin)
+    {
+        var instance = FindInstanceByTargetId(targetId);
+        if (instance?.Host == null)
+        {
+            return false;
+        }
+        
+        bool result = instance.Host.SetPinned(shouldPin);
+        OnTargetPinStateChanged?.Invoke(targetId, instance.Host.IsPinned);
+        return result;
+    }
+    
+    public bool IsTargetPinned(string targetId)
+    {
+        var instance = FindInstanceByTargetId(targetId);
+        if (instance != null && instance.Host != null)
+        {
+            return instance.Host.IsPinned;
+        }
+        return false;
     }
 
     private void RequestArtifactForInstance(TrackedArtifactInstance instance)
@@ -329,38 +452,41 @@ public class TrackedArtifactManager : MonoBehaviour
         
         if (artifactService == null)
         {
-            Debug.LogError($"{LogPrefix} ArtifactService не инициализирован");
+            // Debug.LogError($"{LogPrefix} ArtifactService не инициализирован");
             return;
         }
 
+        if (modelSceneManager == null)
+        {
+            Debug.LogError($"{LogPrefix} ModelSceneManager не инициализирован");
+            return;
+        }
+
+        // КРИТИЧНО: Захватываем локальные копии для предотвращения race condition
         string requestedTargetId = instance.TargetId;
+        TrackableId capturedTrackableId = instance.TrackedImage.trackableId;
+        TrackedModelHost capturedHost = instance.Host;
+        
         if (string.IsNullOrEmpty(requestedTargetId))
         {
-            Debug.LogWarning($"{LogPrefix} TargetId пуст при запросе артефакта");
+            // Debug.LogWarning($"{LogPrefix} TargetId пуст при запросе артефакта");
             return;
         }
 
-        // Проверяем, не загружается ли уже модель для этого instance
-        if (instance.LoadCoroutine != null)
+        // Проверяем, не загружена ли уже модель для этого targetId
+        if (capturedHost != null && capturedHost.HasLoadedModel)
         {
-            if (string.Equals(instance.LoadingTargetId, requestedTargetId, StringComparison.Ordinal))
-            {
-                // Debug.Log($"{LogPrefix} Модель уже загружается для targetId={requestedTargetId}, пропускаем повторный запрос");
-                return;
-            }
-
-            Debug.LogWarning($"{LogPrefix} ⚠️ Прерываем загрузку targetId={instance.LoadingTargetId} ради нового targetId={requestedTargetId}");
-            StopCoroutine(instance.LoadCoroutine);
-            instance.LoadCoroutine = null;
-            instance.LoadingTargetId = null;
+            // Модель уже загружена в хосте, пропускаем запрос
+            // Debug.Log($"{LogPrefix} Модель уже загружена для targetId={requestedTargetId}, пропускаем запрос");
+            return;
         }
 
-        Debug.Log($"{LogPrefix} [БД] Запрос артефакта для targetId='{requestedTargetId}'");
+        // Debug.Log($"{LogPrefix} [БД] Запрос артефакта для targetId='{requestedTargetId}'");
         artifactService.RequestArtifactForTarget(
             requestedTargetId,
             availability =>
             {
-                Debug.Log($"{LogPrefix} [БД] Получен артефакт: targetId='{requestedTargetId}', artifactId='{availability.ArtifactId}'");
+                // Debug.Log($"{LogPrefix} [БД] Получен артефакт: targetId='{requestedTargetId}', artifactId='{availability.ArtifactId}'");
                 
                 // Получаем название артефакта из результата
                 string artifactName = availability.DisplayName;
@@ -371,174 +497,118 @@ public class TrackedArtifactManager : MonoBehaviour
                 
                 if (!string.IsNullOrEmpty(artifactName))
                 {
-                    Debug.Log($"{LogPrefix} [БД] Название артефакта: '{artifactName}'");
+                    // Debug.Log($"{LogPrefix} [БД] Название артефакта: '{artifactName}'");
                     OnArtifactFound?.Invoke(requestedTargetId, artifactName);
+                    // Новое событие с artifactId
+                    if (!string.IsNullOrEmpty(availability.ArtifactId))
+                    {
+                        OnArtifactFoundWithId?.Invoke(requestedTargetId, availability.ArtifactId, artifactName);
+                    }
                 }
                 else
                 {
-                    Debug.LogWarning($"{LogPrefix} [БД] Название артефакта не найдено для targetId='{requestedTargetId}'");
+                    // Debug.LogWarning($"{LogPrefix} [БД] Название артефакта не найдено для targetId='{requestedTargetId}'");
                 }
                 
-                if (!trackedInstances.TryGetValue(instance.TrackedImage.trackableId, out var currentInstance))
+                // Используем захваченный trackableId для повторного поиска актуального instance
+                if (!trackedInstances.TryGetValue(capturedTrackableId, out var currentInstance))
                 {
-                    Debug.LogWarning($"{LogPrefix} Instance не найден в trackedInstances для TrackableId={instance.TrackedImage.trackableId}");
+                    // Debug.LogWarning($"{LogPrefix} Instance не найден в trackedInstances для TrackableId={capturedTrackableId}");
                     return;
                 }
 
-                // Debug.Log($"{LogPrefix} CurrentInstance.TargetId: '{currentInstance.TargetId}'");
-                // Debug.Log($"{LogPrefix} CurrentInstance.LoadingTargetId: '{currentInstance.LoadingTargetId}'");
-
                 if (currentInstance.Host == null)
                 {
-                    Debug.LogWarning($"{LogPrefix} Host == null, пропускаем");
+                    // Debug.LogWarning($"{LogPrefix} Host == null, пропускаем");
                     return;
                 }
 
                 if (!string.Equals(currentInstance.TargetId, requestedTargetId, StringComparison.Ordinal))
                 {
-                    Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Текущий: '{currentInstance.TargetId}', Запрошенный: '{requestedTargetId}', игнорируем результат");
+                    // Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Текущий: '{currentInstance.TargetId}', Запрошенный: '{requestedTargetId}', игнорируем результат");
                     return;
                 }
 
                 if (currentInstance.Host.HasLoadedArtifact(availability.ArtifactId))
                 {
-                    // Debug.Log($"{LogPrefix} Модель уже загружена для targetId={instance.TargetId}, artifactId={availability.ArtifactId}");
+                    // Debug.Log($"{LogPrefix} Модель уже загружена для targetId={requestedTargetId}, artifactId={availability.ArtifactId}");
                     return;
                 }
 
-                // Проверяем еще раз, не запущена ли уже корутина
-                if (currentInstance.LoadCoroutine != null)
+                // Захватываем актуальный хост из currentInstance
+                TrackedModelHost actualHost = currentInstance.Host;
+                if (actualHost == null)
                 {
-                    Debug.LogWarning($"{LogPrefix} ⚠️ Модель уже загружается для targetId={instance.TargetId}, останавливаем предыдущую корутину");
-                    StopCoroutine(currentInstance.LoadCoroutine);
+                    Debug.LogWarning($"{LogPrefix} ActualHost == null после повторной проверки, пропускаем");
+                    return;
                 }
 
-                Debug.Log($"{LogPrefix} [3D] Запуск загрузки модели для targetId={requestedTargetId}, artifactId={availability.ArtifactId}");
-                currentInstance.LoadingTargetId = requestedTargetId;
-                currentInstance.LoadCoroutine = StartCoroutine(LoadModelCoroutine(currentInstance, availability, requestedTargetId));
+                // Получаем метаданные модели
+                string metadataJson = null;
+                if (availability.Record != null && availability.Record.media != null)
+                {
+                    var modelMedia = availability.Record.media.FirstOrDefault(m => 
+                        string.Equals(m.mediaType, "3d_model", StringComparison.OrdinalIgnoreCase));
+                    if (modelMedia != null)
+                    {
+                        metadataJson = modelMedia.metadataJson;
+                    }
+                }
+
+                // Используем ModelSceneManager для размещения модели
+                Debug.Log($"{LogPrefix} [3D] Запрос размещения модели через ModelSceneManager: artifactId={availability.ArtifactId}, targetId={requestedTargetId}");
+                modelSceneManager.RequestModelForHost(
+                    availability.ArtifactId,
+                    actualHost,
+                    availability.LocalModelPath,
+                    metadataJson,
+                    () =>
+                    {
+                        Debug.Log($"{LogPrefix} [3D] Модель успешно размещена в хосте: artifactId={availability.ArtifactId}");
+                    },
+                    error =>
+                    {
+                        Debug.LogError($"{LogPrefix} [3D] Ошибка размещения модели: artifactId={availability.ArtifactId}, error={error}");
+                    });
             },
             error =>
             {
-                Debug.LogError($"{LogPrefix} [БД] Ошибка получения артефакта: targetId='{requestedTargetId}', error={error}");
-                
-                if (trackedInstances.TryGetValue(instance.TrackedImage.trackableId, out var currentInstance) &&
-                    string.Equals(currentInstance.LoadingTargetId, requestedTargetId, StringComparison.Ordinal))
-                {
-                    currentInstance.LoadingTargetId = null;
-                }
+                // Debug.LogError($"{LogPrefix} [БД] Ошибка получения артефакта: targetId='{requestedTargetId}', error={error}");
             });
     }
 
-    private IEnumerator LoadModelCoroutine(TrackedArtifactInstance instance, ArtifactService.ArtifactAvailabilityResult availability, string requestTargetId)
-    {
-        if (instance.Host == null || string.IsNullOrEmpty(availability.LocalModelPath))
-        {
-            Debug.LogWarning($"{LogPrefix} [3D] Невозможно загрузить модель: Host={instance.Host != null}, Path={availability.LocalModelPath}");
-            instance.LoadingTargetId = null;
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        Debug.Log($"{LogPrefix} [3D] Начало загрузки GLB: targetId={instance.TargetId}, файл={availability.LocalModelPath}");
-
-        // Создаем loaderObject в скрытом состоянии
-        var loaderObject = new GameObject($"GLTF_Loader_{availability.ArtifactId}");
-        loaderObject.transform.SetParent(instance.Host.GetAttachmentRoot(), false);
-        loaderObject.SetActive(false); // Скрываем loaderObject сразу
-
-        var gltfComponent = loaderObject.AddComponent<GLTFComponent>();
-        gltfComponent.GLTFUri = availability.LocalModelPath;
-        gltfComponent.LoadFromStreamingAssets = false;
-        gltfComponent.Multithreaded = true;
-        gltfComponent.loadOnStart = false;
-        gltfComponent.HideSceneObjDuringLoad = true;
-
-        Task loadTask;
-        try
-        {
-            loadTask = gltfComponent.Load();
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"{LogPrefix} Синхронная ошибка GLTF загрузчика: {e.Message}");
-            Destroy(loaderObject);
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        while (!loadTask.IsCompleted)
-        {
-            yield return null;
-        }
-
-        if (loadTask.IsFaulted)
-        {
-            Debug.LogError($"{LogPrefix} Ошибка GLTF загрузки: {loadTask.Exception?.GetBaseException().Message}");
-            Destroy(loaderObject);
-            instance.LoadingTargetId = null;
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        var loadedScene = gltfComponent.LastLoadedScene;
-        if (loadedScene == null)
-        {
-            Debug.LogWarning($"{LogPrefix} GLTF сцена не содержит объектов для targetId={instance.TargetId}");
-            Destroy(loaderObject);
-            instance.LoadingTargetId = null;
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        // Проверяем, не был ли instance удален или изменен во время загрузки
-        if (!trackedInstances.TryGetValue(instance.TrackedImage.trackableId, out var currentInstance) || 
-            currentInstance != instance || 
-            currentInstance.Host == null)
-        {
-            Debug.LogWarning($"{LogPrefix} Instance был изменен или удален во время загрузки для targetId={instance.TargetId}");
-            Destroy(loadedScene);
-            Destroy(loaderObject);
-            instance.LoadingTargetId = null;
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        if (!string.Equals(requestTargetId, currentInstance.TargetId, StringComparison.Ordinal))
-        {
-            Debug.LogWarning($"{LogPrefix} Модель для устаревшего targetId={requestTargetId}. Текущий targetId={currentInstance.TargetId}");
-            Destroy(loadedScene);
-            Destroy(loaderObject);
-            instance.LoadingTargetId = null;
-            instance.LoadCoroutine = null;
-            yield break;
-        }
-
-        // Убеждаемся, что loadedScene не является дочерним объектом loaderObject
-        // (GLTFComponent может создать модель внутри loaderObject)
-        if (loadedScene.transform.parent == loaderObject.transform)
-        {
-            loadedScene.transform.SetParent(null, true); // Отсоединяем от loaderObject, сохраняя мировые координаты
-        }
-
-        // Передаем модель в Host - он сам установит parent и выровняет
-        instance.Host.AttachLoadedModel(loadedScene, availability.ArtifactId);
-
-        // Уничтожаем loaderObject после того, как модель передана
-        // Это также уничтожит GLTFComponent и все его дочерние объекты (если они остались)
-        Destroy(loaderObject);
-        instance.LoadingTargetId = null;
-        instance.LoadCoroutine = null;
-        Debug.Log($"{LogPrefix} [3D] GLB успешно загружен и отображен для targetId={instance.TargetId}");
-    }
+    // Удалены методы ProcessModelCreationQueue, LoadModelCoroutine и CleanupOrphanedGLTFObjects
+    // Теперь используется ModelSceneManager для управления размещением моделей на сцене
 
     private class TrackedArtifactInstance
     {
         public ARTrackedImage TrackedImage;
         public TrackedModelHost Host;
-        public Coroutine LoadCoroutine;
         public string TargetId;
-        public string LoadingTargetId;
         public bool HasLoggedTargetInfo;
+    }
+    
+    private TrackedArtifactInstance FindInstanceByTargetId(string targetId)
+    {
+        if (string.IsNullOrEmpty(targetId))
+        {
+            return null;
+        }
+        
+        foreach (var kvp in trackedInstances)
+        {
+            if (kvp.Value == null)
+            {
+                continue;
+            }
+            
+            if (string.Equals(kvp.Value.TargetId, targetId, StringComparison.Ordinal))
+            {
+                return kvp.Value;
+            }
+        }
+        
+        return null;
     }
 }
 

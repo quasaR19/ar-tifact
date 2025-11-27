@@ -1,0 +1,124 @@
+/* Screen Layout */
+.history-screen {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+}
+
+/* List Styles */
+.history-list {
+  width: 100%;
+}
+
+.history-container {
+  display: flex;
+  flex-direction: column;
+  padding: 30px;
+  flex-grow: 1;
+}
+
+.history-item {
+  flex-direction: row;
+  background-color: #1e1e1e;
+  border-radius: 12px;
+  border-width: 1px;
+  border-color: rgba(29, 78, 216, 0.3);
+  overflow: hidden;
+  min-height: 144px;
+  margin-bottom: 30px;
+  align-items: center;
+  padding: 12px;
+}
+
+.history-item:hover {
+  border-color: rgba(29, 78, 216, 0.5);
+  background-color: #2a2a2a;
+}
+
+.history-preview {
+  height: 300px;
+  width: 300px;
+  background-color: #1e1e1e;
+  justify-content: center;
+  align-items: center;
+  color: #e5e5e5;
+  font-size: 36px;
+  -unity-text-align: middle-center;
+}
+
+.history-info {
+  flex-direction: column;
+  flex-grow: 1;
+  flex-shrink: 1;
+  min-width: 0;
+  padding: 18px 24px;
+  gap: 9px;
+  overflow: hidden;
+}
+
+.history-name {
+  font-size: 60px;
+  max-height: 140px;
+  -unity-font-style: bold;
+  color: #e5e5e5;
+  white-space: normal;
+  -unity-text-overflow: ellipsis;
+  -unity-text-overflow-position: end;
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+}
+
+.history-meta {
+  font-size: 36px;
+  white-space: normal;
+  color: rgba(150, 150, 150, 0.7);
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  padding: 45px;
+  -unity-text-align: middle-center;
+  color: #757575;
+  font-size: 36px;
+  display: none;
+}
+
+.empty-state.visible {
+  display: flex;
+}
+
+.loading-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 24px 30px;
+  color: rgb(150, 150, 170);
+  font-size: 21px;
+  display: none;
+}
+
+.loading-state.visible {
+  display: flex;
+}
+
+/* ScrollView Scrollers */
+.unity-scroller--vertical {
+  width: 12px;
+}
+
+.unity-scroller--vertical .unity-dragger {
+  background-color: rgba(100, 150, 255, 0.3);
+  border-radius: 6px;
+}
+
+.unity-scroller--vertical .unity-dragger:hover {
+  background-color: rgba(100, 150, 255, 0.5);
+}
