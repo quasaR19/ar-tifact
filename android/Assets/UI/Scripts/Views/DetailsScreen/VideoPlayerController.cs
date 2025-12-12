@@ -648,7 +648,7 @@ namespace ARArtifact.UI
             if (playPauseButton == null || !isPrepared) return;
             
             // Меняем текст кнопки на основе фактического состояния воспроизведения
-            playPauseButton.text = videoPlayer.isPlaying ? "⏸" : "▶";
+            playPauseButton.text = videoPlayer.isPlaying ? "||" : "▶";
         }
         
         /// <summary>
