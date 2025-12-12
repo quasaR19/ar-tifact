@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { X } from "lucide-react";
+import type { CSSProperties } from "react";
+import { X, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { LocalMediaItem } from "./media-uploader";
@@ -11,14 +12,24 @@ interface MediaPreviewProps {
   media: LocalMediaItem;
   onRemove: () => void;
   onUpdate?: (updates: Partial<LocalMediaItem>) => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   className?: string;
+  style?: CSSProperties;
 }
 
 export function MediaPreview({
   media,
   onRemove,
   onUpdate,
+  canMoveUp = false,
+  canMoveDown = false,
+  onMoveUp,
+  onMoveDown,
   className,
+  style,
 }: MediaPreviewProps) {
   // Используем ref для хранения предыдущего blob URL, чтобы не отзывать его слишком рано
   const previousBlobUrlRef = useRef<string | null>(null);
@@ -72,6 +83,7 @@ export function MediaPreview({
         "relative border rounded-lg overflow-hidden bg-muted/50",
         className
       )}
+      style={style}
     >
       <Button
         type="button"
@@ -133,7 +145,35 @@ export function MediaPreview({
         {media.type === "video" && "Видео"}
         {media.type === "youtube" && "YouTube"}
       </div>
+
+      {(canMoveUp || canMoveDown) && (
+        <div className="p-2 flex gap-2 justify-center items-center border-t">
+          {canMoveUp && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onMoveUp}
+              title="Переместить вверх"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </Button>
+          )}
+          {canMoveDown && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onMoveDown}
+              title="Переместить вниз"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
-

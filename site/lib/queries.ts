@@ -128,7 +128,7 @@ export async function getArtifactById(
     .from("artifact_media")
     .select("*, media(*)")
     .eq("artifact_id", artifactId)
-    .order("created_at", { ascending: true });
+    .order("display_order", { ascending: true });
 
   // Если таблица не существует - используем пустой массив
   if (mediaError?.code === "PGRST205") {
@@ -270,7 +270,10 @@ export async function deleteArtifact(
     .eq("artifact_id", artifactId);
 
   if (targetsError) {
-    console.error("[deleteArtifact] Ошибка при получении таргетов:", targetsError);
+    console.error(
+      "[deleteArtifact] Ошибка при получении таргетов:",
+      targetsError
+    );
     // Продолжаем удаление даже при ошибке получения таргетов
   }
 
@@ -286,7 +289,9 @@ export async function deleteArtifact(
     }
   }
 
-  const targetUrls: string[] = (targetsData || []).map((t) => t.url).filter(Boolean);
+  const targetUrls: string[] = (targetsData || [])
+    .map((t) => t.url)
+    .filter(Boolean);
 
   // Удаляем связи медиа с артефактом
   const { error: mediaLinksError } = await supabase
@@ -468,6 +473,33 @@ export async function updateArtifactMediaMetadata(
 }
 
 /**
+ * Обновление порядка отображения медиа-ресурса
+ * @param supabaseClient - клиент Supabase
+ * @param linkId - ID связи из таблицы artifact_media
+ * @param displayOrder - новый порядок отображения
+ */
+export async function updateArtifactMediaDisplayOrder(
+  supabaseClient: SupabaseClient,
+  linkId: string,
+  displayOrder: number
+): Promise<void> {
+  const supabase = supabaseClient;
+
+  const { error } = await supabase
+    .from("artifact_media")
+    .update({ display_order: displayOrder })
+    .eq("id", linkId);
+
+  if (error) {
+    console.error(
+      "[updateArtifactMediaDisplayOrder] Ошибка при обновлении порядка:",
+      error
+    );
+    throw error;
+  }
+}
+
+/**
  * Удаление связи медиа с артефактом
  * @param supabaseClient - клиент Supabase (обязательный)
  * @param linkId - ID связи из таблицы artifact_media
@@ -631,10 +663,7 @@ export async function deleteArtifactTarget(
     throw targetFetchError;
   }
 
-  const { error } = await supabase
-    .from("targets")
-    .delete()
-    .eq("id", targetId);
+  const { error } = await supabase.from("targets").delete().eq("id", targetId);
 
   if (error) {
     console.error("[deleteArtifactTarget] Ошибка при удалении таргета:", error);
@@ -643,4 +672,3 @@ export async function deleteArtifactTarget(
 
   return targetData?.url || null;
 }
-

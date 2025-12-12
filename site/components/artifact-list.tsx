@@ -22,4 +22,3 @@ export function ArtifactList({ artifacts }: ArtifactListProps) {
     </div>
   );
 }
-

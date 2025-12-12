@@ -8,10 +8,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const { urls } = body;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
-      return NextResponse.json(
-        { error: "No URLs provided" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No URLs provided" }, { status: 400 });
     }
 
     // Проверяем аутентификацию пользователя
@@ -21,10 +18,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Удаляем файлы
@@ -39,4 +33,3 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 }
-

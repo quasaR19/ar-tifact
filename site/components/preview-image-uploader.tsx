@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Image as ImageIcon, Upload, X } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { convertWebPToImage, isWebP } from "@/lib/image-converter";
 
 interface PreviewImageUploaderProps {
   previewImageUrl: string | null;
@@ -25,18 +26,33 @@ export function PreviewImageUploader({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback(
-    (file: File) => {
+    async (file: File) => {
       // Проверяем, что это изображение
       if (!file.type.startsWith("image/")) {
         alert("Пожалуйста, выберите файл изображения");
         return;
       }
 
+      let fileToUse = file;
+
+      // Конвертируем WebP в JPG
+      if (isWebP(file)) {
+        try {
+          fileToUse = await convertWebPToImage(file, "jpeg");
+        } catch (error) {
+          console.error("Ошибка конвертации WebP:", error);
+          alert(
+            "Не удалось конвертировать WebP изображение. Пожалуйста, используйте JPG или PNG."
+          );
+          return;
+        }
+      }
+
       // Создаем превью
-      const url = URL.createObjectURL(file);
+      const url = URL.createObjectURL(fileToUse);
       setPreviewUrl(url);
 
-      onImageSelect(file);
+      onImageSelect(fileToUse);
     },
     [onImageSelect]
   );
@@ -152,7 +168,7 @@ export function PreviewImageUploader({
                 Перетащите изображение или нажмите для выбора
               </p>
               <p className="text-xs text-muted-foreground">
-                Поддерживаются: JPG, PNG, WebP
+                Поддерживаются: JPG, PNG (WebP автоматически конвертируется)
               </p>
             </div>
             <Button
@@ -169,7 +185,7 @@ export function PreviewImageUploader({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/jpeg,image/jpg,image/png,image/webp"
         onChange={handleFileInputChange}
         className="hidden"
       />

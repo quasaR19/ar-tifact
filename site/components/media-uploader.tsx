@@ -37,7 +37,9 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
       } else if (["mp4", "webm", "mov", "avi"].includes(extension || "")) {
         type = "video";
       } else {
-        alert("Неподдерживаемый формат файла. Используйте .glb или видео файлы.");
+        alert(
+          "Неподдерживаемый формат файла. Используйте .glb или видео файлы."
+        );
         return;
       }
 
@@ -228,4 +230,3 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
     </div>
   );
 }
-

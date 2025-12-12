@@ -9,6 +9,7 @@ import {
   createFileFromCropped,
 } from "@/lib/image-analysis/imageCropper";
 import { checkImageQuality } from "@/lib/image-analysis/imageQualityChecker";
+import { convertWebPToImage, isWebP } from "@/lib/image-converter";
 
 export interface LocalTargetItem {
   id: string;
@@ -34,14 +35,23 @@ export function TargetUploader({
 
   const handleFileSelect = useCallback(
     async (file: File) => {
-      // Проверяем формат файла (только jpg/jpeg/png)
-      const allowedTypes = ["image/jpeg", "image/jpg", "image/png"];
+      // Проверяем формат файла (jpg/jpeg/png или webp для конвертации)
+      const allowedTypes = [
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ];
       const fileExtension = file.name.toLowerCase().split(".").pop();
-      const isValidType = allowedTypes.includes(file.type) || 
-        (file.type.startsWith("image/") && ["jpg", "jpeg", "png"].includes(fileExtension || ""));
-      
+      const isValidType =
+        allowedTypes.includes(file.type) ||
+        (file.type.startsWith("image/") &&
+          ["jpg", "jpeg", "png", "webp"].includes(fileExtension || ""));
+
       if (!isValidType) {
-        setError("Поддерживаются только форматы JPG, JPEG и PNG");
+        setError(
+          "Поддерживаются только форматы JPG, JPEG, PNG (WebP автоматически конвертируется)"
+        );
         return;
       }
 
@@ -49,16 +59,37 @@ export function TargetUploader({
       setError(null);
 
       try {
+        let fileToUse = file;
+
+        // Конвертируем WebP в JPG перед обработкой
+        if (isWebP(file)) {
+          try {
+            fileToUse = await convertWebPToImage(file, "jpeg");
+          } catch (error) {
+            setError(
+              "Не удалось конвертировать WebP изображение. Пожалуйста, используйте JPG или PNG."
+            );
+            setIsProcessing(false);
+            return;
+          }
+        }
+
         // 1. Обрезаем до квадрата 1:1
-        const croppedResult = await cropImageToSquare(file);
-        const croppedFile = createFileFromCropped(croppedResult, file.name);
+        const croppedResult = await cropImageToSquare(fileToUse);
+        const croppedFile = createFileFromCropped(
+          croppedResult,
+          fileToUse.name
+        );
 
         // 2. Анализируем качество
         const analysisResult = await checkImageQuality(croppedFile);
 
         // Если качество слишком низкое (не соответствует требованиям ARCore)
         // Минимальный проходной балл = 75
-        if (!analysisResult.meetsMinimumRequirements || analysisResult.score < 75) {
+        if (
+          !analysisResult.meetsMinimumRequirements ||
+          analysisResult.score < 75
+        ) {
           throw new Error(
             "Изображение не подходит для ARCore. Минимальный балл качества: 75. " +
               (analysisResult.recommendations.length > 0
@@ -181,7 +212,7 @@ export function TargetUploader({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/jpeg,image/jpg,image/png"
+        accept="image/jpeg,image/jpg,image/png,image/webp"
         onChange={handleFileInputChange}
         className="hidden"
         disabled={isProcessing}
@@ -189,4 +220,3 @@ export function TargetUploader({
     </div>
   );
 }
-

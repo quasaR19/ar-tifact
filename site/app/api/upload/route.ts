@@ -13,10 +13,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const jsonResponse = await handleUpload({
@@ -28,7 +25,10 @@ export async function POST(request: Request): Promise<NextResponse> {
         let allowedContentTypes: string[] = [];
 
         if (extension === "glb") {
-          allowedContentTypes = ["model/gltf-binary", "application/octet-stream"];
+          allowedContentTypes = [
+            "model/gltf-binary",
+            "application/octet-stream",
+          ];
         } else if (["mp4", "webm", "mov", "avi"].includes(extension || "")) {
           allowedContentTypes = [
             "video/mp4",
@@ -36,12 +36,13 @@ export async function POST(request: Request): Promise<NextResponse> {
             "video/quicktime",
             "video/x-msvideo",
           ];
-        } else if (["jpg", "jpeg", "png", "webp", "gif", "svg"].includes(extension || "")) {
-          // Поддержка изображений для превью
+        } else if (
+          ["jpg", "jpeg", "png", "gif", "svg"].includes(extension || "")
+        ) {
+          // Поддержка изображений для превью (WebP исключен, должен конвертироваться на клиенте)
           allowedContentTypes = [
             "image/jpeg",
             "image/png",
-            "image/webp",
             "image/gif",
             "image/svg+xml",
           ];
@@ -70,4 +71,3 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 }
-

@@ -80,7 +80,7 @@ function TargetCard({ target, onRemove, onUpdate }: TargetCardProps) {
           </div>
         )}
       </div>
-      
+
       <div className="flex-1 space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor={`size-${target.id}`}>Размер (см)</Label>
@@ -93,15 +93,15 @@ function TargetCard({ target, onRemove, onUpdate }: TargetCardProps) {
                     target.quality_score >= 75
                       ? "bg-green-500/20 text-green-700 dark:text-green-400"
                       : target.quality_score >= 50
-                      ? "bg-yellow-500/20 text-yellow-700 dark:text-yellow-400"
-                      : "bg-red-500/20 text-red-700 dark:text-red-400"
+                        ? "bg-yellow-500/20 text-yellow-700 dark:text-yellow-400"
+                        : "bg-red-500/20 text-red-700 dark:text-red-400"
                   }`}
                   title={
                     target.quality_score >= 75
                       ? "Отличное качество для ARCore"
                       : target.quality_score >= 50
-                      ? "Приемлемое качество"
-                      : "Низкое качество, может не работать в ARCore"
+                        ? "Приемлемое качество"
+                        : "Низкое качество, может не работать в ARCore"
                   }
                 >
                   {target.quality_score}/100
@@ -113,8 +113,8 @@ function TargetCard({ target, onRemove, onUpdate }: TargetCardProps) {
                     target.quality_score >= 75
                       ? "bg-green-500"
                       : target.quality_score >= 50
-                      ? "bg-yellow-500"
-                      : "bg-red-500"
+                        ? "bg-yellow-500"
+                        : "bg-red-500"
                   }`}
                   style={{ width: `${target.quality_score}%` }}
                 />

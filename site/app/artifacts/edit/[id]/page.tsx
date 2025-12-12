@@ -24,12 +24,14 @@ import {
   getArtifactById,
   updateArtifact,
   updateArtifactMediaMetadata,
+  updateArtifactMediaDisplayOrder,
 } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/client";
 import { upload } from "@vercel/blob/client";
 import { Loader2, Save, Trash2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { convertWebPToImage, isWebP } from "@/lib/image-converter";
 
 export default function ArtifactEditPage() {
   const params = useParams();
@@ -77,13 +79,26 @@ export default function ArtifactEditPage() {
         setDescription(data.description || "");
         setPreviewImageUrl(data.preview_image_url);
 
-        // Преобразуем существующие медиа в LocalMediaItem
-        const existingMedia: LocalMediaItem[] = data.media.map((m) => ({
-          id: m.id,
-          type: m.media.media_type,
-          url: m.media.url,
-          metadata: m.media.metadata || undefined,
-        }));
+        // Преобразуем существующие медиа в LocalMediaItem и сортируем по display_order
+        // Если несколько элементов имеют одинаковый display_order, используем created_at как вторичный ключ
+        const existingMedia: LocalMediaItem[] = data.media
+          .map((m) => ({
+            id: m.id,
+            type: m.media.media_type,
+            url: m.media.url,
+            metadata: m.media.metadata || undefined,
+            display_order: m.display_order,
+          }))
+          .sort((a, b) => {
+            const orderDiff = (a.display_order ?? 0) - (b.display_order ?? 0);
+            // Если display_order одинаковый, сортируем по id для стабильности
+            return orderDiff !== 0 ? orderDiff : a.id.localeCompare(b.id);
+          })
+          // Нормализуем display_order: присваиваем уникальные значения на основе позиции
+          .map((item, index) => ({
+            ...item,
+            display_order: index,
+          }));
         setLocalMedia(existingMedia);
 
         // Преобразуем существующие таргеты в LocalTargetItem и анализируем качество
@@ -131,7 +146,18 @@ export default function ArtifactEditPage() {
   }, [artifactId, isNew]);
 
   const handleMediaAdd = useCallback((media: LocalMediaItem) => {
-    setLocalMedia((prev) => [...prev, media]);
+    setLocalMedia((prev) => {
+      // Находим максимальный display_order, чтобы гарантировать уникальность
+      const maxOrder =
+        prev.length > 0
+          ? Math.max(...prev.map((m) => m.display_order ?? 0))
+          : -1;
+      const newMedia = {
+        ...media,
+        display_order: maxOrder + 1,
+      };
+      return [...prev, newMedia];
+    });
   }, []);
 
   const handleMediaRemove = useCallback((id: string) => {
@@ -146,6 +172,59 @@ export default function ArtifactEditPage() {
     },
     []
   );
+
+  const handleMediaMoveUp = useCallback((id: string) => {
+    setLocalMedia((prev) => {
+      const item = prev.find((m) => m.id === id);
+      if (!item) return prev;
+      const currentOrder = item.display_order ?? 0;
+      if (currentOrder <= 0) return prev;
+
+      // Находим элемент с порядком на 1 меньше
+      const prevItem = prev.find(
+        (m) => (m.display_order ?? 0) === currentOrder - 1
+      );
+      if (!prevItem) return prev;
+
+      // Меняем местами display_order
+      return prev.map((m) => {
+        if (m.id === id) {
+          return { ...m, display_order: currentOrder - 1 };
+        }
+        if (m.id === prevItem.id) {
+          return { ...m, display_order: currentOrder };
+        }
+        return m;
+      });
+    });
+  }, []);
+
+  const handleMediaMoveDown = useCallback((id: string) => {
+    setLocalMedia((prev) => {
+      const item = prev.find((m) => m.id === id);
+      if (!item) return prev;
+      const currentOrder = item.display_order ?? 0;
+      const maxOrder = Math.max(...prev.map((m) => m.display_order ?? 0));
+      if (currentOrder >= maxOrder) return prev;
+
+      // Находим элемент с порядком на 1 больше
+      const nextItem = prev.find(
+        (m) => (m.display_order ?? 0) === currentOrder + 1
+      );
+      if (!nextItem) return prev;
+
+      // Меняем местами display_order
+      return prev.map((m) => {
+        if (m.id === id) {
+          return { ...m, display_order: currentOrder + 1 };
+        }
+        if (m.id === nextItem.id) {
+          return { ...m, display_order: currentOrder };
+        }
+        return m;
+      });
+    });
+  }, []);
 
   const handlePreviewImageSelect = useCallback((file: File) => {
     setPreviewImageFile(file);
@@ -372,10 +451,38 @@ export default function ArtifactEditPage() {
           "preview-upload",
           "processing",
           undefined,
+          "Обработка файла..."
+        );
+
+        // Конвертируем WebP в JPG, если необходимо
+        let fileToUpload = previewImageFile;
+        if (isWebP(previewImageFile)) {
+          try {
+            fileToUpload = await convertWebPToImage(previewImageFile, "jpeg");
+            updateStepStatus(
+              "preview-upload",
+              "processing",
+              undefined,
+              "Конвертация WebP в JPG..."
+            );
+          } catch {
+            updateStepStatus(
+              "preview-upload",
+              "error",
+              "Не удалось конвертировать WebP изображение"
+            );
+            throw new Error("Ошибка конвертации WebP");
+          }
+        }
+
+        updateStepStatus(
+          "preview-upload",
+          "processing",
+          undefined,
           "Загрузка файла..."
         );
         previewImageUrlToSave = await uploadMediaToBlob(
-          previewImageFile,
+          fileToUpload,
           artifactId || "temp",
           "preview"
         );
@@ -564,6 +671,62 @@ export default function ArtifactEditPage() {
           throw new Error(
             `Ошибка сохранения медиа (${media.type}): ${errorMessage}`
           );
+        }
+      }
+
+      // Обновляем display_order для всех медиа
+      // Получаем актуальный список медиа из БД после всех операций
+      const { data: allMediaData } = await supabase
+        .from("artifact_media")
+        .select("id, media(url)")
+        .eq("artifact_id", currentArtifactId);
+
+      if (allMediaData) {
+        // Создаем мапу: URL медиа -> ID в БД (для сопоставления новых медиа)
+        const urlToIdMap = new Map<string, string>();
+        for (const item of allMediaData) {
+          // @ts-expect-error - media может быть объектом с url
+          const url = item.media?.url;
+          if (url) {
+            urlToIdMap.set(url, item.id);
+          }
+        }
+
+        // Сортируем localMedia по display_order для получения правильного визуального порядка
+        // (так как CSS order используется для отображения, но нам нужен порядок по display_order)
+        const sortedLocalMedia = [...localMedia].sort(
+          (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)
+        );
+
+        // Обновляем display_order для всех медиа в порядке из sortedLocalMedia
+        for (let i = 0; i < sortedLocalMedia.length; i++) {
+          const localMediaItem = sortedLocalMedia[i];
+          if (!localMediaItem) continue;
+
+          let mediaId: string | undefined;
+
+          if (
+            localMediaItem.id &&
+            existingMediaIds.includes(localMediaItem.id)
+          ) {
+            // Существующее медиа - используем его ID
+            mediaId = localMediaItem.id;
+          } else if (localMediaItem.url) {
+            // Новое медиа - находим ID по URL
+            mediaId = urlToIdMap.get(localMediaItem.url);
+          }
+
+          if (mediaId) {
+            try {
+              await updateArtifactMediaDisplayOrder(supabase, mediaId, i);
+            } catch (error) {
+              console.error(
+                `Ошибка обновления порядка медиа ${mediaId}:`,
+                error
+              );
+              // Не прерываем процесс сохранения из-за ошибки обновления порядка
+            }
+          }
         }
       }
 
@@ -783,6 +946,8 @@ export default function ArtifactEditPage() {
               onMediaAdd={handleMediaAdd}
               onMediaRemove={handleMediaRemove}
               onMediaUpdate={handleMediaUpdate}
+              onMediaMoveUp={handleMediaMoveUp}
+              onMediaMoveDown={handleMediaMoveDown}
             />
             <TargetList
               targets={localTargets}
