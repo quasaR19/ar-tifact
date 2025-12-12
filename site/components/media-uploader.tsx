@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Upload, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { extractVideoMetadata } from "@/lib/video-metadata";
 
 export interface LocalMediaItem {
   id: string;
@@ -28,21 +29,38 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
   const youtubeInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback(
-    (file: File) => {
+    async (file: File) => {
       const extension = file.name.split(".").pop()?.toLowerCase();
       let type: "3d_model" | "video" | "youtube";
 
       if (extension === "glb") {
         type = "3d_model";
+        onMediaAdd({
+          id: crypto.randomUUID(),
+          type,
+          file,
+          metadata: {
+            filename: file.name,
+            size: file.size,
+          },
+        });
       } else if (["mp4", "webm", "mov", "avi"].includes(extension || "")) {
         type = "video";
-      } else {
-        alert(
-          "Неподдерживаемый формат файла. Используйте .glb или видео файлы."
-        );
-        return;
-      }
-
+        
+        // Извлекаем метаданные видео
+        try {
+          const videoMetadata = await extractVideoMetadata(file);
+          onMediaAdd({
+            id: crypto.randomUUID(),
+            type,
+            file,
+            metadata: {
+              ...videoMetadata,
+            },
+          });
+        } catch (error) {
+          console.error("[MediaUploader] Ошибка извлечения метаданных видео:", error);
+          // Добавляем медиа без метаданных, если не удалось извлечь
       onMediaAdd({
         id: crypto.randomUUID(),
         type,
@@ -52,6 +70,13 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
           size: file.size,
         },
       });
+        }
+      } else {
+        alert(
+          "Неподдерживаемый формат файла. Используйте .glb или видео файлы."
+        );
+        return;
+      }
     },
     [onMediaAdd]
   );

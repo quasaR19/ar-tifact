@@ -83,9 +83,6 @@ namespace ARArtifact.UI
                 // Включаем видимость вертикального скроллера
                 markersList.verticalScrollerVisibility = ScrollerVisibility.Auto;
                 markersList.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-                // Альтернативный способ (для старых версий Unity)
-                markersList.showVertical = true;
-                markersList.showHorizontal = false;
             }
             markersContainer = _root.Q<VisualElement>("markers-container");
             emptyState = _root.Q<VisualElement>("empty-state");

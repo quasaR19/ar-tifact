@@ -6,6 +6,7 @@ using System.Linq;
 using UnityEngine;
 using UnityGLTF;
 using System.Threading.Tasks;
+using ARArtifact.UI;
 
 namespace ARArtifact.Services
 {
@@ -30,7 +31,6 @@ namespace ARArtifact.Services
                     var go = new GameObject("ModelLoaderService");
                     _instance = go.AddComponent<ModelLoaderService>();
                     DontDestroyOnLoad(go);
-                    Debug.Log($"{LogPrefix} Создан Singleton экземпляр");
                 }
 
                 return _instance;
@@ -56,6 +56,7 @@ namespace ARArtifact.Services
         {
             public string ArtifactId;
             public string LocalPath;
+            public string RemoteUrl;
             public string MetadataJson;
             public Coroutine LoadCoroutine;
             public float Progress;
@@ -65,6 +66,7 @@ namespace ARArtifact.Services
             public bool IsCompleted;
             public bool IsFaulted;
             public string ErrorMessage;
+            public int AutoRecoveryAttempts = 0; // Количество попыток автоматического восстановления
         }
 
         private Transform hiddenContainer;
@@ -72,10 +74,25 @@ namespace ARArtifact.Services
         private readonly Dictionary<string, LoadedModelData> loadedModels = new();
         private readonly LinkedList<string> modelAccessOrder = new(); // LRU порядок доступа
         
-        // Кеш ошибок загрузки, чтобы не пытаться загружать поврежденные файлы повторно
-        private readonly Dictionary<string, string> failedLoads = new();
-        private readonly Dictionary<string, DateTime> failedLoadsTime = new();
-        private const float FailedLoadRetryDelay = 300f; // 5 минут до повторной попытки
+        /// <summary>
+        /// Информация об ошибке загрузки для отслеживания повторных попыток
+        /// </summary>
+        private class FailedLoadInfo
+        {
+            public string ErrorMessage;
+            public DateTime LastFailureTime;
+            public int AttemptCount; // Количество неудачных попыток
+        }
+        
+        // Кеш ошибок загрузки с отслеживанием попыток и экспоненциальным backoff
+        private readonly Dictionary<string, FailedLoadInfo> failedLoads = new();
+        private const float InitialRetryDelay = 5f; // Начальная задержка: 5 секунд
+        private const float MaxRetryDelay = 300f; // Максимальная задержка: 5 минут (300 секунд)
+        
+        // Настройки автоматического восстановления
+        [Header("Auto Recovery")]
+        [SerializeField] private int maxAutoRecoveryAttempts = 3; // Максимум попыток автоматического восстановления
+        [SerializeField] private float autoRecoveryBaseDelay = 2f; // Базовая задержка между попытками (секунды)
         
         // Настройки управления памятью
         [Header("Memory Management")]
@@ -144,7 +161,6 @@ namespace ARArtifact.Services
             modelAccessOrder.Clear();
             activeLoads.Clear();
             failedLoads.Clear();
-            failedLoadsTime.Clear();
         }
 
         /// <summary>
@@ -206,8 +222,9 @@ namespace ARArtifact.Services
             
             try
             {
-                // Используем FileShare.Read для более консервативного доступа
-                using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                // Используем FileShare.ReadWrite для разрешения одновременного доступа
+                // Это позволяет читать файл, даже если он еще записывается другим процессом
+                using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
                     var magic = new byte[4];
                     int bytesRead = fs.Read(magic, 0, 4);
@@ -237,7 +254,23 @@ namespace ARArtifact.Services
             }
             catch (IOException ioEx)
             {
-                readError = ioEx.Message;
+                // Проверяем, является ли это sharing violation или блокировкой файла
+                string errorMsg = ioEx.Message.ToLowerInvariant();
+                if (errorMsg.Contains("sharing violation") || 
+                    errorMsg.Contains("being used by another process") ||
+                    errorMsg.Contains("cannot access") ||
+                    errorMsg.Contains("access is denied"))
+                {
+                    readError = "Файл используется другим процессом (возможно, еще загружается). Повторная попытка...";
+                }
+                else
+                {
+                    readError = ioEx.Message;
+                }
+            }
+            catch (UnauthorizedAccessException uaEx)
+            {
+                readError = $"Нет доступа к файлу: {uaEx.Message}";
             }
             catch (Exception e)
             {
@@ -246,10 +279,12 @@ namespace ARArtifact.Services
             }
             
             // Если файл заблокирован, ждем асинхронно и пробуем снова
-            if (!readSuccess && retryCount < 5)
+            if (!readSuccess && retryCount < 10)
             {
-                Debug.LogWarning($"{LogPrefix} Файл заблокирован, повторная попытка через 0.5с: {readError}");
-                yield return new WaitForSeconds(0.5f);
+                // Увеличиваем время ожидания с каждой попыткой
+                float waitTime = 0.3f + (retryCount * 0.2f);
+                Debug.LogWarning($"{LogPrefix} Файл заблокирован, повторная попытка {retryCount + 1}/10 через {waitTime:F1}с: {readError}");
+                yield return new WaitForSeconds(waitTime);
                 
                 // Рекурсивно вызываем себя через новую корутину
                 var retryResult = new GLBValidationResult();
@@ -260,7 +295,7 @@ namespace ARArtifact.Services
             }
             else if (!readSuccess)
             {
-                result.Error = $"Ошибка доступа к файлу: {readError}";
+                result.Error = $"Ошибка доступа к файлу после {retryCount} попыток: {readError}";
                 yield break;
             }
             
@@ -279,10 +314,13 @@ namespace ARArtifact.Services
             if (declaredLength != fileInfo.Length)
             {
                 // Если файл еще записывается (размер меньше заявленного), и у нас есть попытки
-                if (fileInfo.Length < declaredLength && retryCount < 5)
+                if (fileInfo.Length < declaredLength && retryCount < 15)
                 {
-                    Debug.LogWarning($"{LogPrefix} Файл еще записывается: заявлено {declaredLength} байт, реально {fileInfo.Length} байт. Повторная попытка через 0.5с...");
-                    yield return new WaitForSeconds(0.5f);
+                    // Увеличиваем время ожидания с каждой попыткой (0.5с, 1с, 1.5с, 2с...)
+                    float waitTime = 0.5f + (retryCount * 0.5f);
+                    
+                    // Перед повторной попыткой проверяем стабильность файла
+                    yield return StartCoroutine(WaitForFileStable(filePath, waitTime));
                     
                     // Рекурсивно вызываем себя через новую корутину
                     var retryResult = new GLBValidationResult();
@@ -292,11 +330,186 @@ namespace ARArtifact.Services
                     yield break;
                 }
                 
-                result.Error = $"Длина файла не соответствует заголовку: заявлено {declaredLength} байт, реально {fileInfo.Length} байт";
+                // Если размер файла больше заявленного - файл поврежден или неверный заголовок
+                // Если размер меньше и исчерпаны попытки - файл не полностью скачан
+                if (fileInfo.Length > declaredLength)
+                {
+                    result.Error = $"Файл поврежден: размер файла ({fileInfo.Length} байт) превышает заявленную длину ({declaredLength} байт)";
+                }
+                else
+                {
+                    result.Error = $"Файл не полностью скачан: заявлено {declaredLength} байт, реально {fileInfo.Length} байт. Попробуйте перезагрузить модель.";
+                }
                 yield break;
             }
 
             result.IsValid = true;
+        }
+        
+        /// <summary>
+        /// Автоматически восстанавливает неполностью скачанный файл
+        /// </summary>
+        private IEnumerator AutoRecoverFile(ModelLoadOperation operation, string originalError)
+        {
+            operation.AutoRecoveryAttempts++;
+            int attempt = operation.AutoRecoveryAttempts;
+            
+            MainScreenController.LogToMainScreen($"Автоматическое восстановление модели (попытка {attempt}/{maxAutoRecoveryAttempts})...", operation.ArtifactId);
+            
+            if (File.Exists(operation.LocalPath))
+            {
+                try
+                {
+                    File.Delete(operation.LocalPath);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"{LogPrefix} [Автовосстановление] Не удалось удалить файл: {e.Message}");
+                    FailOperation(operation, $"Не удалось удалить поврежденный файл: {e.Message}");
+                    yield break;
+                }
+            }
+            
+            float delay = autoRecoveryBaseDelay * Mathf.Pow(2f, attempt - 1);
+            yield return new WaitForSeconds(delay);
+            
+            bool downloadCompleted = false;
+            bool downloadSuccess = false;
+            string downloadError = null;
+            
+            string mediaId = ExtractMediaIdFromPath(operation.LocalPath) ?? operation.ArtifactId;
+            
+            ArtifactMediaService.Instance.DownloadModel(
+                operation.ArtifactId,
+                mediaId,
+                operation.RemoteUrl,
+                localPath =>
+                {
+                    downloadCompleted = true;
+                    downloadSuccess = true;
+                    operation.LocalPath = localPath;
+                },
+                error =>
+                {
+                    downloadCompleted = true;
+                    downloadSuccess = false;
+                    downloadError = error;
+                    Debug.LogError($"{LogPrefix} [Автовосстановление] Ошибка перезагрузки: {error}");
+                });
+            
+            // Ждем завершения загрузки (без таймаута)
+            while (!downloadCompleted)
+            {
+                yield return null;
+            }
+            
+            if (!downloadSuccess)
+            {
+                FailOperation(operation, $"Ошибка автоматического восстановления: {downloadError}");
+                yield break;
+            }
+            
+            // Проверяем, что файл существует
+            if (!File.Exists(operation.LocalPath))
+            {
+                FailOperation(operation, "Файл не найден после автоматического восстановления");
+                yield break;
+            }
+            
+            // Повторяем валидацию
+            Debug.Log($"{LogPrefix} [Автовосстановление] Повторная валидация файла...");
+            var retryValidationResult = new GLBValidationResult();
+            yield return StartCoroutine(ValidateGLBFileAsync(operation.LocalPath, retryValidationResult));
+            
+            if (!retryValidationResult.IsValid)
+            {
+                if (operation.AutoRecoveryAttempts < maxAutoRecoveryAttempts)
+                {
+                    yield return StartCoroutine(AutoRecoverFile(operation, retryValidationResult.Error));
+                    yield break;
+                }
+                else
+                {
+                    string errorMessage = $"Автоматическое восстановление не удалось после {maxAutoRecoveryAttempts} попыток: {retryValidationResult.Error}";
+                    MainScreenController.LogToMainScreen($"Ошибка: {errorMessage}", operation.ArtifactId);
+                    FailOperation(operation, errorMessage);
+                    yield break;
+                }
+            }
+            
+            MainScreenController.LogToMainScreen("Модель успешно восстановлена", operation.ArtifactId);
+            yield return StartCoroutine(LoadModelCoroutine(operation));
+        }
+        
+        private string ExtractMediaIdFromPath(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return null;
+            
+            try
+            {
+                string fileName = Path.GetFileNameWithoutExtension(filePath);
+                // Формат: artifactId_mediaId.glb
+                // Ищем последний подчеркивание, после которого идет mediaId
+                int lastUnderscore = fileName.LastIndexOf('_');
+                if (lastUnderscore >= 0 && lastUnderscore < fileName.Length - 1)
+                {
+                    return fileName.Substring(lastUnderscore + 1);
+                }
+            }
+            catch
+            {
+                // Игнорируем ошибки парсинга
+            }
+            
+            return null;
+        }
+        
+        /// <summary>
+        /// Ожидает стабилизации размера файла (файл не изменяется в течение нескольких проверок)
+        /// </summary>
+        private IEnumerator WaitForFileStable(string filePath, float maxWaitTime = 2f, float checkInterval = 0.2f)
+        {
+            if (!File.Exists(filePath))
+            {
+                yield break;
+            }
+            
+            float startTime = Time.time;
+            long lastSize = 0;
+            int stableCount = 0;
+            const int requiredStableChecks = 3; // Файл должен быть стабильным 3 проверки подряд
+            
+            while (Time.time - startTime < maxWaitTime)
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(filePath);
+                    fileInfo.Refresh();
+                    long currentSize = fileInfo.Length;
+                    
+                    if (currentSize == lastSize)
+                    {
+                        stableCount++;
+                        if (stableCount >= requiredStableChecks)
+                        {
+                            // Размер файла стабилен
+                            yield break;
+                        }
+                    }
+                    else
+                    {
+                        stableCount = 0;
+                        lastSize = currentSize;
+                    }
+                }
+                catch
+                {
+                    // Игнорируем ошибки доступа к файлу
+                }
+                
+                yield return new WaitForSeconds(checkInterval);
+            }
         }
 
         /// <summary>
@@ -308,12 +521,14 @@ namespace ARArtifact.Services
         /// <param name="metadataJson">Метаданные модели (JSON строка)</param>
         /// <param name="onSuccess">Колбэк при успешной загрузке (передает GameObject модели)</param>
         /// <param name="onError">Колбэк при ошибке</param>
+        /// <param name="remoteUrl">URL для повторной загрузки при необходимости (опционально)</param>
         public void RequestModelLoad(
             string artifactId,
             string localPath,
             string metadataJson,
             Action<GameObject> onSuccess,
-            Action<string> onError)
+            Action<string> onError,
+            string remoteUrl = null)
         {
             if (string.IsNullOrEmpty(artifactId))
             {
@@ -327,36 +542,36 @@ namespace ARArtifact.Services
                 return;
             }
 
-            // Проверяем кеш ошибок
-            if (failedLoads.TryGetValue(artifactId, out var cachedError))
+            // Проверяем кеш ошибок с экспоненциальным backoff
+            if (failedLoads.TryGetValue(artifactId, out var failedInfo))
             {
-                if (failedLoadsTime.TryGetValue(artifactId, out var failTime))
+                float timeSinceFail = (float)(DateTime.Now - failedInfo.LastFailureTime).TotalSeconds;
+                
+                // Рассчитываем задержку: начальная 5 секунд, затем удваивается при каждой попытке
+                // attemptCount=0: 5с, attemptCount=1: 10с, attemptCount=2: 20с, attemptCount=3: 40с, и т.д.
+                float retryDelay = InitialRetryDelay * Mathf.Pow(2f, failedInfo.AttemptCount);
+                retryDelay = Mathf.Min(retryDelay, MaxRetryDelay); // Ограничиваем максимумом
+                
+                if (timeSinceFail < retryDelay)
                 {
-                    var timeSinceFail = (DateTime.Now - failTime).TotalSeconds;
-                    if (timeSinceFail < FailedLoadRetryDelay)
-                    {
-                        // Не прошло достаточно времени для повторной попытки
-                        Debug.LogWarning($"{LogPrefix} Пропускаем загрузку {artifactId}: предыдущая ошибка была {timeSinceFail:F1}с назад. Ошибка: {cachedError}");
-                        onError?.Invoke($"Поврежденный файл (повторная попытка через {FailedLoadRetryDelay - timeSinceFail:F0}с): {cachedError}");
-                        return;
-                    }
-                    else
-                    {
-                        // Прошло достаточно времени, удаляем из кеша ошибок для повторной попытки
-                        failedLoads.Remove(artifactId);
-                        failedLoadsTime.Remove(artifactId);
-                        Debug.Log($"{LogPrefix} Повторная попытка загрузки {artifactId} после {timeSinceFail:F1}с");
-                    }
+                    // Не прошло достаточно времени для повторной попытки
+                    float remainingTime = retryDelay - timeSinceFail;
+                    Debug.LogWarning($"{LogPrefix} Пропускаем загрузку {artifactId}: предыдущая ошибка была {timeSinceFail:F1}с назад (попытка {failedInfo.AttemptCount + 1}, задержка {retryDelay:F0}с). Ошибка: {failedInfo.ErrorMessage}");
+                    onError?.Invoke($"Поврежденный файл (повторная попытка через {remainingTime:F0}с): {failedInfo.ErrorMessage}");
+                    return;
+                }
+                else
+                {
+                    // Прошло достаточно времени, готовы к повторной попытке
+                    Debug.Log($"{LogPrefix} Повторная попытка загрузки {artifactId} после {timeSinceFail:F1}с (попытка {failedInfo.AttemptCount + 1}, задержка была {retryDelay:F0}с)");
+                    // Не удаляем из кеша - счетчик попыток будет обновлен при следующей ошибке
                 }
             }
 
-            // Проверяем, не загружена ли уже модель
             if (loadedModels.TryGetValue(artifactId, out var loadedData))
             {
                 if (loadedData.ModelInstance != null)
                 {
-                    Debug.Log($"{LogPrefix} Модель {artifactId} уже загружена, возвращаем существующую");
-                    // Обновляем время последнего доступа и счетчик ссылок
                     loadedData.LastAccessedAt = DateTime.UtcNow;
                     loadedData.ReferenceCount++;
                     UpdateAccessOrder(artifactId);
@@ -365,57 +580,62 @@ namespace ARArtifact.Services
                 }
                 else
                 {
-                    // Модель была уничтожена, удаляем запись
                     loadedModels.Remove(artifactId);
                     modelAccessOrder.Remove(artifactId);
                 }
             }
 
-            // Проверяем, не загружается ли уже модель
             if (activeLoads.TryGetValue(artifactId, out var existingOperation))
             {
-                Debug.Log($"{LogPrefix} Модель {artifactId} уже загружается, подключаемся к существующей операции");
                 existingOperation.SuccessCallbacks.Add(onSuccess);
                 existingOperation.ErrorCallbacks.Add(onError);
                 return;
             }
 
-            // Создаем новую операцию загрузки
             var operation = new ModelLoadOperation
             {
                 ArtifactId = artifactId,
                 LocalPath = localPath,
-                MetadataJson = metadataJson
+                RemoteUrl = remoteUrl,
+                MetadataJson = metadataJson,
+                AutoRecoveryAttempts = 0
             };
             operation.SuccessCallbacks.Add(onSuccess);
             operation.ErrorCallbacks.Add(onError);
             activeLoads[artifactId] = operation;
 
-            // Запускаем загрузку с асинхронной валидацией
             operation.LoadCoroutine = StartCoroutine(ValidateAndLoadModelCoroutine(operation));
-            Debug.Log($"{LogPrefix} Запущена загрузка модели: artifactId={artifactId}, path={localPath}");
             
-            // Уведомляем о начале загрузки
             OnLoadStarted?.Invoke(artifactId);
         }
         
-        /// <summary>
-        /// Корутина для асинхронной валидации и последующей загрузки модели
-        /// </summary>
         private IEnumerator ValidateAndLoadModelCoroutine(ModelLoadOperation operation)
         {
-            // Асинхронно валидируем файл
             var validationResult = new GLBValidationResult();
             yield return StartCoroutine(ValidateGLBFileAsync(operation.LocalPath, validationResult));
             
             // Проверяем результат валидации
             if (!validationResult.IsValid)
             {
-                Debug.LogError($"{LogPrefix} Файл не прошел валидацию: {operation.LocalPath}, ошибка: {validationResult.Error}");
-                // Сохраняем ошибку в кеш
-                failedLoads[operation.ArtifactId] = validationResult.Error;
-                failedLoadsTime[operation.ArtifactId] = DateTime.Now;
-                FailOperation(operation, $"Файл поврежден: {validationResult.Error}");
+                // Проверяем, можно ли автоматически восстановить файл
+                bool isIncompleteDownload = validationResult.Error.Contains("не полностью скачан") || 
+                                           validationResult.Error.Contains("не полностью загружен");
+                
+                if (isIncompleteDownload && !string.IsNullOrEmpty(operation.RemoteUrl) && 
+                    operation.AutoRecoveryAttempts < maxAutoRecoveryAttempts)
+                {
+                    // Пытаемся автоматически восстановить файл
+                    yield return StartCoroutine(AutoRecoverFile(operation, validationResult.Error));
+                    yield break;
+                }
+                
+                string errorMessage = $"Файл поврежден: {validationResult.Error}";
+                // Логируем в MainScreen вместо консоли
+                MainScreenController.LogToMainScreen($"Ошибка загрузки модели: {errorMessage}", operation.ArtifactId);
+                Debug.LogWarning($"{LogPrefix} Файл не прошел валидацию: {operation.LocalPath}, ошибка: {validationResult.Error}");
+                // Сохраняем ошибку в кеш с обновлением счетчика попыток
+                RecordFailedLoad(operation.ArtifactId, errorMessage);
+                FailOperation(operation, errorMessage);
                 yield break;
             }
             
@@ -523,13 +743,9 @@ namespace ARArtifact.Services
                 }
 
                 activeLoads.Remove(artifactId);
-                Debug.Log($"{LogPrefix} Загрузка модели {artifactId} отменена");
             }
         }
 
-        /// <summary>
-        /// Удаляет загруженную модель из кеша
-        /// </summary>
         public void UnloadModel(string artifactId)
         {
             if (loadedModels.TryGetValue(artifactId, out var loadedData))
@@ -540,7 +756,6 @@ namespace ARArtifact.Services
                 }
                 loadedModels.Remove(artifactId);
                 modelAccessOrder.Remove(artifactId);
-                Debug.Log($"{LogPrefix} Модель {artifactId} выгружена из кеша");
             }
         }
         
@@ -552,22 +767,15 @@ namespace ARArtifact.Services
             if (loadedModels.TryGetValue(artifactId, out var loadedData))
             {
                 loadedData.ReferenceCount = Mathf.Max(0, loadedData.ReferenceCount - 1);
-                Debug.Log($"{LogPrefix} Счетчик ссылок для {artifactId}: {loadedData.ReferenceCount}");
             }
         }
         
-        /// <summary>
-        /// Обновляет порядок доступа для LRU кеша
-        /// </summary>
         private void UpdateAccessOrder(string artifactId)
         {
             modelAccessOrder.Remove(artifactId);
             modelAccessOrder.AddLast(artifactId);
         }
         
-        /// <summary>
-        /// Освобождает место в кеше, выгружая наименее используемые модели
-        /// </summary>
         private void EnsureCacheSpace()
         {
             while (loadedModels.Count >= maxLoadedModels && modelAccessOrder.Count > 0)
@@ -575,23 +783,17 @@ namespace ARArtifact.Services
                 var oldestId = modelAccessOrder.First.Value;
                 var oldestData = loadedModels[oldestId];
                 
-                // Не выгружаем модели с активными ссылками
                 if (oldestData.ReferenceCount > 0)
                 {
-                    // Пропускаем эту модель и перемещаем в конец
                     modelAccessOrder.RemoveFirst();
                     modelAccessOrder.AddLast(oldestId);
                     continue;
                 }
                 
-                Debug.Log($"{LogPrefix} Освобождаем место в кеше: выгружаем модель {oldestId}");
                 UnloadModel(oldestId);
             }
         }
         
-        /// <summary>
-        /// Очищает неиспользуемые модели по TTL
-        /// </summary>
         private void CleanupUnusedModels()
         {
             var now = DateTime.UtcNow;
@@ -617,51 +819,37 @@ namespace ARArtifact.Services
             
             foreach (var artifactId in modelsToRemove)
             {
-                Debug.Log($"{LogPrefix} Выгружаем модель {artifactId} по TTL ({modelTTLMinutes} минут)");
                 UnloadModel(artifactId);
             }
             
             if (modelsToRemove.Count > 0)
             {
-                // Освобождаем неиспользуемые ресурсы асинхронно, чтобы не блокировать основной поток
                 StartCoroutine(UnloadUnusedAssetsAsync());
             }
         }
         
-        /// <summary>
-        /// Асинхронно освобождает неиспользуемые ресурсы
-        /// </summary>
         private IEnumerator UnloadUnusedAssetsAsync()
         {
-            // Ждем несколько кадров перед вызовом, чтобы не блокировать рендеринг
             yield return new WaitForEndOfFrame();
             yield return null;
             
-            // Вызываем асинхронную операцию
             var asyncOperation = Resources.UnloadUnusedAssets();
             
-            // Ждем завершения асинхронно
             while (!asyncOperation.isDone)
             {
                 yield return null;
             }
-            
-            Debug.Log($"{LogPrefix} Освобождение неиспользуемых ресурсов завершено");
         }
         
-        /// <summary>
-        /// Очищает кеш ошибок загрузки
-        /// </summary>
         private void CleanupFailedLoadsCache()
         {
-            // Ограничиваем размер кеша ошибок
             if (failedLoads.Count > maxFailedLoadsCache)
             {
                 var toRemove = failedLoads.Count - maxFailedLoadsCache;
                 var keysToRemove = new List<string>();
                 
                 // Удаляем самые старые записи
-                foreach (var kvp in failedLoadsTime.OrderBy(x => x.Value).Take(toRemove))
+                foreach (var kvp in failedLoads.OrderBy(x => x.Value.LastFailureTime).Take(toRemove))
                 {
                     keysToRemove.Add(kvp.Key);
                 }
@@ -669,20 +857,17 @@ namespace ARArtifact.Services
                 foreach (var key in keysToRemove)
                 {
                     failedLoads.Remove(key);
-                    failedLoadsTime.Remove(key);
                 }
-                
-                Debug.Log($"{LogPrefix} Очищен кеш ошибок: удалено {keysToRemove.Count} записей");
             }
             
-            // Удаляем устаревшие записи (старше FailedLoadRetryDelay)
             var now = DateTime.Now;
             var expiredKeys = new List<string>();
             
-            foreach (var kvp in failedLoadsTime)
+            // Удаляем записи, которые не обновлялись более чем в 2 раза от максимальной задержки
+            foreach (var kvp in failedLoads)
             {
-                var timeSinceFail = (now - kvp.Value).TotalSeconds;
-                if (timeSinceFail >= FailedLoadRetryDelay * 2) // Удаляем записи старше двойного времени повтора
+                float timeSinceFail = (float)(now - kvp.Value.LastFailureTime).TotalSeconds;
+                if (timeSinceFail >= MaxRetryDelay * 2)
                 {
                     expiredKeys.Add(kvp.Key);
                 }
@@ -691,20 +876,36 @@ namespace ARArtifact.Services
             foreach (var key in expiredKeys)
             {
                 failedLoads.Remove(key);
-                failedLoadsTime.Remove(key);
+            }
+        }
+        
+        /// <summary>
+        /// Записывает информацию об ошибке загрузки с обновлением счетчика попыток
+        /// </summary>
+        private void RecordFailedLoad(string artifactId, string errorMessage)
+        {
+            if (failedLoads.TryGetValue(artifactId, out var existingInfo))
+            {
+                // Обновляем существующую запись: увеличиваем счетчик попыток
+                existingInfo.AttemptCount++;
+                existingInfo.LastFailureTime = DateTime.Now;
+                existingInfo.ErrorMessage = errorMessage;
+            }
+            else
+            {
+                // Создаем новую запись: первая попытка (attemptCount = 0)
+                failedLoads[artifactId] = new FailedLoadInfo
+                {
+                    ErrorMessage = errorMessage,
+                    LastFailureTime = DateTime.Now,
+                    AttemptCount = 0
+                };
             }
         }
 
-        /// <summary>
-        /// Очищает кеш ошибок для указанного артефакта (для принудительной повторной попытки)
-        /// </summary>
         public void ClearFailedLoadCache(string artifactId)
         {
-            if (failedLoads.Remove(artifactId))
-            {
-                failedLoadsTime.Remove(artifactId);
-                Debug.Log($"{LogPrefix} Кеш ошибок очищен для {artifactId}");
-            }
+            failedLoads.Remove(artifactId);
         }
 
         /// <summary>
@@ -753,35 +954,35 @@ namespace ARArtifact.Services
             }
             catch (Exception e)
             {
-                Debug.LogError($"{LogPrefix} [Загрузка] Синхронная ошибка GLTF загрузчика: {e.Message}");
-                FailOperation(operation, $"Ошибка запуска загрузки: {e.Message}");
+                string errorMessage = $"Ошибка запуска загрузки: {e.Message}";
+                // Логируем в MainScreen вместо консоли
+                MainScreenController.LogToMainScreen($"Ошибка загрузки модели: {errorMessage}", operation.ArtifactId);
+                Debug.LogWarning($"{LogPrefix} [Загрузка] Синхронная ошибка GLTF загрузчика: {e.Message}");
+                FailOperation(operation, errorMessage);
                 yield break;
             }
 
             // Ожидаем завершения загрузки с обновлением прогресса
-            float timeout = 30f; // 30 секунд максимум
             float elapsed = 0f;
             float lastProgressUpdate = 0f;
+            const float progressUpdateInterval = 0.1f; // Обновляем прогресс каждые 0.1 секунды
+            const float estimatedMaxTime = 120f; // Оценочное максимальное время для расчета прогресса (не таймаут!)
 
-            while (!loadTask.IsCompleted && elapsed < timeout)
+            while (!loadTask.IsCompleted)
             {
                 elapsed += Time.deltaTime;
                 
                 // Обновляем прогресс (приблизительно, т.к. UnityGLTF не предоставляет точный прогресс)
-                if (elapsed - lastProgressUpdate > 0.1f) // Обновляем каждые 0.1 секунды
+                if (elapsed - lastProgressUpdate > progressUpdateInterval)
                 {
-                    operation.Progress = Mathf.Lerp(0.1f, 0.9f, elapsed / timeout);
+                    // Прогресс от 0.1 до 0.9 на основе времени (но без таймаута)
+                    // Используем логарифмическую функцию для более плавного прогресса
+                    float timeProgress = Mathf.Clamp01(elapsed / estimatedMaxTime);
+                    operation.Progress = Mathf.Lerp(0.1f, 0.9f, timeProgress);
                     lastProgressUpdate = elapsed;
                 }
                 
                 yield return null;
-            }
-
-            if (elapsed >= timeout)
-            {
-                Debug.LogError($"{LogPrefix} [Загрузка] ТАЙМАУТ загрузки GLB ({timeout}с): файл={operation.LocalPath}");
-                FailOperation(operation, $"Таймаут загрузки ({timeout}с)");
-                yield break;
             }
 
             operation.Progress = 0.9f;
@@ -789,47 +990,44 @@ namespace ARArtifact.Services
             if (loadTask.IsFaulted)
             {
                 string error = loadTask.Exception?.GetBaseException().Message ?? "Неизвестная ошибка";
-                Debug.LogError($"{LogPrefix} [Загрузка] Ошибка GLTF загрузки: {error}");
-                FailOperation(operation, $"Ошибка загрузки: {error}");
+                string errorMessage = $"Ошибка загрузки: {error}";
+                // Логируем в MainScreen вместо консоли
+                MainScreenController.LogToMainScreen($"Ошибка загрузки модели: {errorMessage}", operation.ArtifactId);
+                Debug.LogWarning($"{LogPrefix} [Загрузка] Ошибка GLTF загрузки: {error}");
+                FailOperation(operation, errorMessage);
                 yield break;
             }
 
             var loadedScene = gltfComponent.LastLoadedScene;
-            Debug.Log($"{LogPrefix} [Загрузка] LastLoadedScene получен: {(loadedScene != null ? loadedScene.name : "NULL")}");
 
             if (loadedScene == null)
             {
+                string errorMessage = "Модель не содержит объектов";
+                MainScreenController.LogToMainScreen($"Ошибка загрузки модели: {errorMessage}", operation.ArtifactId);
                 Debug.LogWarning($"{LogPrefix} [Загрузка] GLTF сцена не содержит объектов для artifactId={operation.ArtifactId}");
-                FailOperation(operation, "Модель не содержит объектов");
+                FailOperation(operation, errorMessage);
                 yield break;
             }
 
-            // КРИТИЧНО: Проверяем, где находится loadedScene
-            // UnityGLTF может создать модель в корне сцены, нужно переместить её в скрытый контейнер
             if (loadedScene.transform.parent == null)
             {
-                Debug.LogWarning($"{LogPrefix} [Загрузка] ⚠️ GLTF модель создана в КОРНЕ СЦЕНЫ! Перемещаем в скрытый контейнер");
                 loadedScene.transform.SetParent(hiddenContainer, false);
             }
             else if (loadedScene.transform.parent != loaderObject.transform)
             {
-                Debug.LogWarning($"{LogPrefix} [Загрузка] ⚠️ Модель имеет неожиданный parent={loadedScene.transform.parent.name}, перемещаем в скрытый контейнер");
                 loadedScene.transform.SetParent(hiddenContainer, false);
             }
             else
             {
-                // Модель внутри loaderObject, перемещаем в скрытый контейнер
                 loadedScene.transform.SetParent(hiddenContainer, false);
             }
 
-            // Убеждаемся, что модель находится в скрытом контейнере
             if (loadedScene.transform.parent != hiddenContainer)
             {
                 Debug.LogError($"{LogPrefix} [Загрузка] ОШИБКА: Модель не в скрытом контейнере! Принудительно перемещаем...");
                 loadedScene.transform.SetParent(hiddenContainer, false);
             }
 
-            // Устанавливаем позицию модели в скрытом контейнере (на всякий случай)
             loadedScene.transform.localPosition = Vector3.zero;
             loadedScene.transform.localRotation = Quaternion.identity;
             loadedScene.transform.localScale = Vector3.one;
@@ -860,11 +1058,10 @@ namespace ARArtifact.Services
             operation.IsCompleted = true;
             activeLoads.Remove(operation.ArtifactId);
 
-            // Очищаем кеш ошибок при успешной загрузке
+            // Очищаем кеш ошибок при успешной загрузке (сбрасываем счетчик попыток)
             if (failedLoads.ContainsKey(operation.ArtifactId))
             {
                 failedLoads.Remove(operation.ArtifactId);
-                failedLoadsTime.Remove(operation.ArtifactId);
                 Debug.Log($"{LogPrefix} Кеш ошибок очищен для успешно загруженной модели {operation.ArtifactId}");
             }
 
@@ -894,14 +1091,10 @@ namespace ARArtifact.Services
                 }
             }
             
-            // Очищаем колбэки для предотвращения утечек памяти
             operation.SuccessCallbacks.Clear();
             operation.ErrorCallbacks.Clear();
         }
 
-        /// <summary>
-        /// Завершает операцию с ошибкой
-        /// </summary>
         private void FailOperation(ModelLoadOperation operation, string error)
         {
             operation.IsFaulted = true;
@@ -923,8 +1116,7 @@ namespace ARArtifact.Services
                  error.Contains("damaged") ||
                  error.Contains("corrupted")))
             {
-                failedLoads[artifactId] = error;
-                failedLoadsTime[artifactId] = DateTime.Now;
+                RecordFailedLoad(artifactId, error);
                 Debug.LogWarning($"{LogPrefix} Ошибка загрузки сохранена в кеш для {artifactId}: {error}");
             }
 

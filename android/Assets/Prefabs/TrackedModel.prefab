@@ -48,12 +48,12 @@ MonoBehaviour:
   modelParent: {fileID: 0}
   distance: 0.05
   modelScale: 1
-  maxSizeMultiplier: 2
+  maxSizeMultiplier: 1.5
   spinModel: 1
   placeholderSpinSpeed: 100
   modelSpinSpeed: 10
-  fadeOutDelaySeconds: 3
-  fadeOutDurationSeconds: 2
+  fadeOutDelaySeconds: 1
+  fadeOutDurationSeconds: 0
   drawGizmos: 0
   gizmoColor: {r: 1, g: 0, b: 0, a: 1}
   gizmoSize: 0.1

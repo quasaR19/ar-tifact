@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using ARArtifact.Services;
 using ARArtifact.Simulation;
+using ARArtifact.UI;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
@@ -21,10 +22,14 @@ public class TrackedArtifactManager : MonoBehaviour
 
     private ArtifactService artifactService;
     private ModelSceneManager modelSceneManager;
+    private VideoSceneManager videoSceneManager;
     private readonly Dictionary<TrackableId, TrackedArtifactInstance> trackedInstances = new();
     
     // Кеш для хостов по trackableId для оптимизации производительности
     private readonly Dictionary<TrackableId, TrackedModelHost> hostCache = new();
+    
+    // Отслеживание активных запросов для предотвращения дублирования
+    private readonly HashSet<string> activeRequests = new HashSet<string>();
     
     // События для уведомления о распознавании таргетов
     public event System.Action<string> OnTargetRecognized; // targetId
@@ -42,6 +47,7 @@ public class TrackedArtifactManager : MonoBehaviour
 
         artifactService = ArtifactService.Instance;
         modelSceneManager = ARArtifact.Services.ModelSceneManager.Instance;
+        videoSceneManager = ARArtifact.Services.VideoSceneManager.Instance;
     }
 
     private void OnEnable()
@@ -49,11 +55,6 @@ public class TrackedArtifactManager : MonoBehaviour
         if (trackedImageManager != null)
         {
             trackedImageManager.trackablesChanged.AddListener(OnTrackedImagesChanged);
-            // Debug.Log($"{LogPrefix} ARTrackedImageManager подключен, трекинг изображений активирован");
-        }
-        else
-        {
-            // Debug.LogError($"{LogPrefix} ARTrackedImageManager не назначен");
         }
     }
 
@@ -77,23 +78,18 @@ public class TrackedArtifactManager : MonoBehaviour
 
     private void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> args)
     {
-        // Debug.Log($"{LogPrefix} [КАМЕРА] Изменения в трекинге: добавлено={args.added.Count}, обновлено={args.updated.Count}, удалено={args.removed.Count}");
-        
         foreach (var trackedImage in args.added)
         {
-            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет добавлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
             HandleTrackedImage(trackedImage);
         }
 
         foreach (var trackedImage in args.updated)
         {
-            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет обновлен: TrackableId={trackedImage.trackableId}, State={trackedImage.trackingState}");
             HandleTrackedImage(trackedImage);
         }
 
         foreach (var removed in args.removed)
         {
-            // Debug.Log($"{LogPrefix} [КАМЕРА] Таргет удален: TrackableId={removed.Key}");
             if (trackedInstances.TryGetValue(removed.Key, out var instance))
             {
                 if (!string.IsNullOrEmpty(instance.TargetId))
@@ -118,7 +114,6 @@ public class TrackedArtifactManager : MonoBehaviour
     {
         if (trackedImage == null)
         {
-            // Debug.LogWarning($"{LogPrefix} HandleTrackedImage: trackedImage == null");
             return;
         }
 
@@ -126,42 +121,16 @@ public class TrackedArtifactManager : MonoBehaviour
         bool isNewInstance = !trackedInstances.TryGetValue(trackedImage.trackableId, out var instance);
         bool shouldLogInfo = verboseLogging && isTracking && (isNewInstance || !instance.HasLoggedTargetInfo);
 
-        if (shouldLogInfo)
-        {
-            // Debug.Log($"{LogPrefix} [ТРЕКИНГ НАЧАТ] TrackableId={trackedImage.trackableId}");
-            
-            if (trackedImage.referenceImage != null)
-            {
-                // Debug.Log($"{LogPrefix} ReferenceImage.name: '{trackedImage.referenceImage.name}'");
-                // Debug.Log($"{LogPrefix} ReferenceImage.guid: {trackedImage.referenceImage.guid}");
-                // Debug.Log($"{LogPrefix} ReferenceImage.textureGuid: {trackedImage.referenceImage.textureGuid}");
-            }
-            else
-            {
-                // Debug.LogWarning($"{LogPrefix} ReferenceImage == null!");
-            }
-        }
-
         var targetId = ResolveTargetIdFromTrackedImage(trackedImage, shouldLogInfo);
-        
-        if (shouldLogInfo)
-        {
-            // Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Resolved targetId: '{targetId}'");
-        }
         
         if (string.IsNullOrEmpty(targetId))
         {
-            if (shouldLogInfo)
-            {
-                // Debug.LogWarning($"{LogPrefix} [РАСПОЗНАНИЕ] targetId пуст, пропускаем объект {trackedImage.trackableId}");
-            }
             return;
         }
         
         // Уведомляем о распознавании таргета
         if (isNewInstance && isTracking)
         {
-            // Debug.Log($"{LogPrefix} [РАСПОЗНАНИЕ] Таргет распознан: targetId='{targetId}'");
             OnTargetRecognized?.Invoke(targetId);
         }
 
@@ -172,17 +141,13 @@ public class TrackedArtifactManager : MonoBehaviour
                 TrackedImage = trackedImage,
                 TargetId = targetId,
                 Host = ResolveHost(trackedImage, targetId),
-                HasLoggedTargetInfo = false
+                HasLoggedTargetInfo = false,
+                LastTrackingState = !isTracking // Initialize with opposite state to ensure SetTrackingActive is called
             };
         trackedInstances[trackedImage.trackableId] = instance;
         }
         else
         {
-            if (!string.Equals(instance.TargetId, targetId, StringComparison.Ordinal))
-            {
-                // Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Старый: '{instance.TargetId}', Новый: '{targetId}'");
-            }
-            
             instance.TrackedImage = trackedImage;
             instance.TargetId = targetId;
             if (instance.Host == null)
@@ -198,14 +163,36 @@ public class TrackedArtifactManager : MonoBehaviour
 
         if (instance.Host == null)
         {
-            if (shouldLogInfo)
-            {
-                // Debug.LogWarning($"{LogPrefix} Не удалось найти TrackedModelHost для маркера {targetId}");
-            }
             return;
         }
 
-        instance.Host.SetTrackingActive(isTracking);
+        // Вызываем SetTrackingActive только если состояние трекинга изменилось
+        // Это предотвращает ненужные вызовы и прерывание fade out корутин
+        if (instance.LastTrackingState != isTracking)
+        {
+            instance.LastTrackingState = isTracking;
+            
+            // Вызываем SetTrackingActive на TrackedModelHost
+            instance.Host.SetTrackingActive(isTracking);
+            
+            // Также вызываем SetTrackingActive на TrackedVideoHost, если он существует
+            var videoHost = instance.Host.GetComponent<TrackedVideoHost>();
+            if (videoHost != null)
+            {
+                // Обновляем размер таргета для видео хоста
+                UpdateVideoHostTargetSizeIfNeeded(videoHost, trackedImage);
+                videoHost.SetTrackingActive(isTracking);
+            }
+        }
+        else
+        {
+            // Состояние не изменилось, но все равно обновляем размер таргета для видео хоста (если нужно)
+            var videoHost = instance.Host.GetComponent<TrackedVideoHost>();
+            if (videoHost != null)
+            {
+                UpdateVideoHostTargetSizeIfNeeded(videoHost, trackedImage);
+            }
+        }
 
         if (!isTracking)
         {
@@ -258,7 +245,6 @@ public class TrackedArtifactManager : MonoBehaviour
 
         if (trackedModelHostPrefab == null)
         {
-            // Debug.LogWarning($"{LogPrefix} Prefab TrackedModelHost не назначен, а существующий не найден");
             return null;
         }
 
@@ -311,42 +297,58 @@ public class TrackedArtifactManager : MonoBehaviour
         targetSizeCache[trackedImage.trackableId] = targetSize; // Обновляем кеш
     }
     
-    // Старый метод для обратной совместимости
-    private void UpdateHostTargetSize(TrackedModelHost host, ARTrackedImage trackedImage)
+    private void UpdateVideoHostTargetSizeIfNeeded(TrackedVideoHost host, ARTrackedImage trackedImage)
     {
-        UpdateHostTargetSizeIfNeeded(host, trackedImage);
+        if (host == null || trackedImage == null)
+        {
+            return;
+        }
+
+        // Получаем размер таргета из ARTrackedImage
+        Vector2 imageSize = trackedImage.size;
+        if (imageSize.x == 0 || imageSize.y == 0)
+        {
+            // Если размер не определен, используем размер из referenceImage
+            if (trackedImage.referenceImage != null)
+            {
+                imageSize = trackedImage.referenceImage.size;
+            }
+            else
+            {
+                return; // Не можем определить размер
+            }
+        }
+
+        // Используем максимальный размер (диагональ) для ограничения видео
+        float targetSize = Mathf.Max(imageSize.x, imageSize.y);
+        
+        // Проверяем кеш - обновляем только если размер изменился
+        if (targetSizeCache.TryGetValue(trackedImage.trackableId, out var cachedSize))
+        {
+            if (Mathf.Approximately(cachedSize, targetSize))
+            {
+                return; // Размер не изменился, пропускаем обновление
+            }
+        }
+        
+        host.SetTargetSize(targetSize);
+        targetSizeCache[trackedImage.trackableId] = targetSize; // Обновляем кеш
     }
 
     private string ResolveTargetIdFromTrackedImage(ARTrackedImage trackedImage, bool shouldLogInfo = false)
     {
         if (trackedImage == null)
         {
-            if (shouldLogInfo)
-            {
-                // Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: trackedImage == null");
-            }
             return null;
         }
 
         if (SimulationMarkerRegistry.TryGetTargetId(trackedImage.trackableId, out var simulationTargetId))
         {
-            if (shouldLogInfo)
-            {
-                // Debug.Log($"{LogPrefix} ✓ Resolved targetId via simulation registry: '{simulationTargetId}'");
-            }
             return simulationTargetId;
-        }
-        else if (shouldLogInfo && Application.isEditor)
-        {
-             // Debug.LogWarning($"{LogPrefix} SimulationMarkerRegistry MISS for TrackableId={trackedImage.trackableId}. Fallback to library lookup.");
         }
 
         if (trackedImage.referenceImage == null)
         {
-            if (shouldLogInfo)
-            {
-                // Debug.LogError($"{LogPrefix} ResolveTargetIdFromTrackedImage: referenceImage == null");
-            }
             return null;
         }
 
@@ -355,40 +357,19 @@ public class TrackedArtifactManager : MonoBehaviour
         var textureGuid = trackedImage.referenceImage.textureGuid;
 
         var library = DynamicReferenceLibrary.Instance;
-        if (library == null)
-        {
-            if (shouldLogInfo)
-            {
-                // Debug.LogError($"{LogPrefix} DynamicReferenceLibrary.Instance == null, используем fallback");
-            }
-        }
-        else
+        if (library != null)
         {
             if (library.TryGetTargetId(referenceGuid, textureGuid, referenceName, out var resolved))
             {
-                if (shouldLogInfo)
-                {
-                    // Debug.Log($"{LogPrefix} ✓ Resolved targetId via library: '{resolved}'");
-                }
                 return resolved;
             }
-            else
+            else if (shouldLogInfo)
             {
-                if (shouldLogInfo)
-                {
-                    // Debug.LogWarning($"{LogPrefix} ✗ Не удалось разрешить targetId через library");
-                    // Debug.Log($"{LogPrefix} Проверяем все доступные маппинги в библиотеке...");
-                    library.LogAllMappings();
-                }
+                library.LogAllMappings();
             }
         }
 
-        var fallback = referenceName;
-        if (shouldLogInfo)
-        {
-            // Debug.LogWarning($"{LogPrefix} ⚠️ Используем fallback: referenceImage.name = '{fallback}'");
-        }
-        return fallback;
+        return referenceName;
     }
     
     public bool TogglePinForTarget(string targetId)
@@ -448,17 +429,16 @@ public class TrackedArtifactManager : MonoBehaviour
 
     private void RequestArtifactForInstance(TrackedArtifactInstance instance)
     {
-        // Debug.Log($"{LogPrefix} RequestArtifactForInstance: TrackableId={instance.TrackedImage.trackableId}, TargetId='{instance.TargetId}'");
-        
         if (artifactService == null)
         {
-            // Debug.LogError($"{LogPrefix} ArtifactService не инициализирован");
             return;
         }
 
         if (modelSceneManager == null)
         {
-            Debug.LogError($"{LogPrefix} ModelSceneManager не инициализирован");
+            // Логируем в MainScreen вместо консоли
+            MainScreenController.LogToMainScreen("Ошибка: ModelSceneManager не инициализирован");
+            Debug.LogWarning($"{LogPrefix} ModelSceneManager не инициализирован");
             return;
         }
 
@@ -469,25 +449,38 @@ public class TrackedArtifactManager : MonoBehaviour
         
         if (string.IsNullOrEmpty(requestedTargetId))
         {
-            // Debug.LogWarning($"{LogPrefix} TargetId пуст при запросе артефакта");
             return;
         }
 
-        // Проверяем, не загружена ли уже модель для этого targetId
-        if (capturedHost != null && capturedHost.HasLoadedModel)
+        // Проверяем, не загружена ли уже модель или видео для этого targetId
+        if (capturedHost != null)
         {
-            // Модель уже загружена в хосте, пропускаем запрос
-            // Debug.Log($"{LogPrefix} Модель уже загружена для targetId={requestedTargetId}, пропускаем запрос");
+            bool hasLoaded = capturedHost.HasLoadedModel;
+            var videoHost = capturedHost.GetComponent<TrackedVideoHost>();
+            if (videoHost != null)
+            {
+                hasLoaded = hasLoaded || videoHost.HasLoadedVideo;
+            }
+            
+            if (hasLoaded)
+            {
+                return;
+            }
+        }
+
+        // Проверяем, не выполняется ли уже запрос для этого targetId
+        if (activeRequests.Contains(requestedTargetId))
+        {
+            Debug.Log($"{LogPrefix} Запрос для targetId={requestedTargetId} уже выполняется, пропускаем дубликат");
             return;
         }
 
-        // Debug.Log($"{LogPrefix} [БД] Запрос артефакта для targetId='{requestedTargetId}'");
+        activeRequests.Add(requestedTargetId);
+
         artifactService.RequestArtifactForTarget(
             requestedTargetId,
             availability =>
             {
-                // Debug.Log($"{LogPrefix} [БД] Получен артефакт: targetId='{requestedTargetId}', artifactId='{availability.ArtifactId}'");
-                
                 // Получаем название артефакта из результата
                 string artifactName = availability.DisplayName;
                 if (string.IsNullOrEmpty(artifactName) && availability.Record != null)
@@ -497,7 +490,6 @@ public class TrackedArtifactManager : MonoBehaviour
                 
                 if (!string.IsNullOrEmpty(artifactName))
                 {
-                    // Debug.Log($"{LogPrefix} [БД] Название артефакта: '{artifactName}'");
                     OnArtifactFound?.Invoke(requestedTargetId, artifactName);
                     // Новое событие с artifactId
                     if (!string.IsNullOrEmpty(availability.ArtifactId))
@@ -505,33 +497,38 @@ public class TrackedArtifactManager : MonoBehaviour
                         OnArtifactFoundWithId?.Invoke(requestedTargetId, availability.ArtifactId, artifactName);
                     }
                 }
-                else
-                {
-                    // Debug.LogWarning($"{LogPrefix} [БД] Название артефакта не найдено для targetId='{requestedTargetId}'");
-                }
                 
                 // Используем захваченный trackableId для повторного поиска актуального instance
                 if (!trackedInstances.TryGetValue(capturedTrackableId, out var currentInstance))
                 {
-                    // Debug.LogWarning($"{LogPrefix} Instance не найден в trackedInstances для TrackableId={capturedTrackableId}");
                     return;
                 }
 
                 if (currentInstance.Host == null)
                 {
-                    // Debug.LogWarning($"{LogPrefix} Host == null, пропускаем");
                     return;
                 }
 
                 if (!string.Equals(currentInstance.TargetId, requestedTargetId, StringComparison.Ordinal))
                 {
-                    // Debug.LogWarning($"{LogPrefix} ⚠️ TargetId изменился! Текущий: '{currentInstance.TargetId}', Запрошенный: '{requestedTargetId}', игнорируем результат");
                     return;
                 }
 
-                if (currentInstance.Host.HasLoadedArtifact(availability.ArtifactId))
+                // Проверяем, не загружено ли уже медиа для этого артефакта
+                bool alreadyLoaded = false;
+                if (currentInstance.Host != null)
                 {
-                    // Debug.Log($"{LogPrefix} Модель уже загружена для targetId={requestedTargetId}, artifactId={availability.ArtifactId}");
+                    alreadyLoaded = currentInstance.Host.HasLoadedArtifact(availability.ArtifactId);
+                }
+                
+                var existingVideoHost = currentInstance.Host?.GetComponent<TrackedVideoHost>();
+                if (existingVideoHost != null)
+                {
+                    alreadyLoaded = alreadyLoaded || existingVideoHost.HasLoadedArtifact(availability.ArtifactId);
+                }
+                
+                if (alreadyLoaded)
+                {
                     return;
                 }
 
@@ -543,37 +540,135 @@ public class TrackedArtifactManager : MonoBehaviour
                     return;
                 }
 
-                // Получаем метаданные модели
-                string metadataJson = null;
-                if (availability.Record != null && availability.Record.media != null)
+                // Проверяем тип медиа и используем соответствующий менеджер
+                if (availability.IsVideo)
                 {
-                    var modelMedia = availability.Record.media.FirstOrDefault(m => 
-                        string.Equals(m.mediaType, "3d_model", StringComparison.OrdinalIgnoreCase));
-                    if (modelMedia != null)
+                    // Проверяем, не загружена ли уже 3D модель в этом хосте
+                    if (actualHost.HasLoadedModel)
                     {
-                        metadataJson = modelMedia.metadataJson;
+                        Debug.LogWarning($"{LogPrefix} [VIDEO] Пропуск размещения видео: в хосте уже загружена 3D модель для targetId={requestedTargetId}");
+                        return;
                     }
+                    
+                    // Используем VideoSceneManager для размещения видео
+                    Debug.Log($"{LogPrefix} [VIDEO] Запрос размещения видео через VideoSceneManager: artifactId={availability.ArtifactId}, targetId={requestedTargetId}");
+                    
+                    // Создаем или находим TrackedVideoHost
+                    TrackedVideoHost videoHost = actualHost.GetComponent<TrackedVideoHost>();
+                    if (videoHost == null)
+                    {
+                        // Создаем TrackedVideoHost на том же GameObject
+                        videoHost = actualHost.gameObject.AddComponent<TrackedVideoHost>();
+                        
+                        // Hide model placeholder when video is loaded
+                        if (actualHost != null)
+                        {
+                            actualHost.HidePlaceholder();
+                        }
+                    }
+                    
+                    // Обновляем размер таргета для видео хоста из trackedImage
+                    if (currentInstance.TrackedImage != null)
+                    {
+                        UpdateVideoHostTargetSizeIfNeeded(videoHost, currentInstance.TrackedImage);
+                    }
+                    else
+                    {
+                        // Если не нашли trackedImage, используем значение по умолчанию
+                        videoHost.SetTargetSize(0.1f);
+                    }
+                    
+                    bool isYouTube = !string.IsNullOrEmpty(availability.VideoUrl) && 
+                                    (availability.VideoUrl.Contains("youtube.com") || availability.VideoUrl.Contains("youtu.be"));
+                    
+                    // Получаем remoteUrl, mediaId и metadataJson из Record для автовосстановления и метаданных
+                    string remoteUrl = null;
+                    string mediaId = null;
+                    string metadataJson = null;
+                    if (availability.Record != null && availability.Record.media != null && availability.Record.media.Count > 0)
+                    {
+                        // Ищем первое видео в медиа
+                        var videoMedia = availability.Record.media.FirstOrDefault(m => m.mediaType == "video");
+                        if (videoMedia != null)
+                        {
+                            remoteUrl = videoMedia.remoteUrl;
+                            mediaId = videoMedia.mediaId;
+                            metadataJson = videoMedia.metadataJson; // Метаданные из кэша
+                        }
+                    }
+                    
+                    videoSceneManager.RequestVideoForHost(
+                        availability.ArtifactId,
+                        videoHost,
+                        availability.LocalVideoPath,
+                        availability.VideoUrl,
+                        isYouTube,
+                        () =>
+                        {
+                            Debug.Log($"{LogPrefix} [VIDEO] Видео успешно размещено в хосте: artifactId={availability.ArtifactId}");
+                            activeRequests.Remove(requestedTargetId);
+                        },
+                        error =>
+                        {
+                            Debug.LogError($"{LogPrefix} [VIDEO] Ошибка размещения видео: artifactId={availability.ArtifactId}, error={error}");
+                            activeRequests.Remove(requestedTargetId);
+                        },
+                        remoteUrl,
+                        mediaId,
+                        metadataJson);
                 }
-
-                // Используем ModelSceneManager для размещения модели
-                Debug.Log($"{LogPrefix} [3D] Запрос размещения модели через ModelSceneManager: artifactId={availability.ArtifactId}, targetId={requestedTargetId}");
-                modelSceneManager.RequestModelForHost(
-                    availability.ArtifactId,
-                    actualHost,
-                    availability.LocalModelPath,
-                    metadataJson,
-                    () =>
+                else
+                {
+                    // Используем ModelSceneManager для размещения модели
+                    Debug.Log($"{LogPrefix} [3D] Запрос размещения модели через ModelSceneManager: artifactId={availability.ArtifactId}, targetId={requestedTargetId}");
+                    
+                    // Получаем метаданные модели и remoteUrl
+                    string metadataJson = null;
+                    string remoteUrl = null;
+                    if (availability.Record != null && availability.Record.media != null)
                     {
-                        Debug.Log($"{LogPrefix} [3D] Модель успешно размещена в хосте: artifactId={availability.ArtifactId}");
-                    },
-                    error =>
+                        var modelMedia = availability.Record.media.FirstOrDefault(m => 
+                            string.Equals(m.mediaType, "3d_model", StringComparison.OrdinalIgnoreCase));
+                        if (modelMedia != null)
+                        {
+                            metadataJson = modelMedia.metadataJson;
+                            remoteUrl = modelMedia.remoteUrl;
+                        }
+                    }
+                    
+                    // Используем actualHost как TrackedModelHost
+                    if (actualHost == null)
                     {
-                        Debug.LogError($"{LogPrefix} [3D] Ошибка размещения модели: artifactId={availability.ArtifactId}, error={error}");
-                    });
+                        string errorMessage = "ActualHost == null для размещения модели";
+                        // Логируем в MainScreen вместо консоли
+                        MainScreenController.LogToMainScreen($"Ошибка размещения модели: {errorMessage}", availability.ArtifactId);
+                        Debug.LogWarning($"{LogPrefix} ActualHost == null для размещения модели");
+                        return;
+                    }
+                    
+                    modelSceneManager.RequestModelForHost(
+                        availability.ArtifactId,
+                        actualHost,
+                        availability.LocalModelPath,
+                        metadataJson,
+                        () =>
+                        {
+                            Debug.Log($"{LogPrefix} [3D] Модель успешно размещена в хосте: artifactId={availability.ArtifactId}");
+                            activeRequests.Remove(requestedTargetId);
+                        },
+                        error =>
+                        {
+                            // Логируем в MainScreen вместо консоли
+                            MainScreenController.LogToMainScreen($"Ошибка размещения модели: {error}", availability.ArtifactId);
+                            Debug.LogWarning($"{LogPrefix} [3D] Ошибка размещения модели: artifactId={availability.ArtifactId}, error={error}");
+                            activeRequests.Remove(requestedTargetId);
+                        },
+                        remoteUrl);
+                }
             },
             error =>
             {
-                // Debug.LogError($"{LogPrefix} [БД] Ошибка получения артефакта: targetId='{requestedTargetId}', error={error}");
+                activeRequests.Remove(requestedTargetId);
             });
     }
 
@@ -586,6 +681,7 @@ public class TrackedArtifactManager : MonoBehaviour
         public TrackedModelHost Host;
         public string TargetId;
         public bool HasLoggedTargetInfo;
+        public bool LastTrackingState = false; // Track last tracking state to avoid unnecessary SetTrackingActive calls
     }
     
     private TrackedArtifactInstance FindInstanceByTargetId(string targetId)

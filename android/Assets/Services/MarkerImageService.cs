@@ -259,18 +259,23 @@ namespace ARArtifact.Services
                     RenderTextureReadWrite.Linear);
                 
                 RenderTexture previous = RenderTexture.active;
-                RenderTexture.active = renderTexture;
-                
-                // Копируем исходную текстуру в RenderTexture
-                Graphics.Blit(tempTexture, renderTexture);
-                
-                // Читаем пиксели из RenderTexture в финальную текстуру
-                finalTexture.ReadPixels(new Rect(0, 0, tempTexture.width, tempTexture.height), 0, 0);
-                finalTexture.Apply();
-                
-                // Восстанавливаем активный RenderTexture
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(renderTexture);
+                try
+                {
+                    RenderTexture.active = renderTexture;
+                    
+                    // Копируем исходную текстуру в RenderTexture
+                    Graphics.Blit(tempTexture, renderTexture);
+                    
+                    // Читаем пиксели из RenderTexture в финальную текстуру
+                    finalTexture.ReadPixels(new Rect(0, 0, tempTexture.width, tempTexture.height), 0, 0);
+                    finalTexture.Apply();
+                }
+                finally
+                {
+                    // Восстанавливаем активный RenderTexture и освобождаем временный
+                    RenderTexture.active = previous;
+                    RenderTexture.ReleaseTemporary(renderTexture);
+                }
                 
                 // Уничтожаем временную текстуру
                 Destroy(tempTexture);
@@ -336,20 +341,28 @@ namespace ARArtifact.Services
             // Создаем RenderTexture для масштабирования
             RenderTexture renderTexture = RenderTexture.GetTemporary(newWidth, newHeight, 0, RenderTextureFormat.Default, RenderTextureReadWrite.Linear);
             RenderTexture previous = RenderTexture.active;
-            RenderTexture.active = renderTexture;
             
-            // Копируем исходную текстуру в RenderTexture с масштабированием
-            Graphics.Blit(texture, renderTexture);
-            
-            // Создаем новую текстуру с правильным форматом
+            // Объявляем scaledTexture вне try блока для доступа после finally
             TextureFormat targetFormat = texture.format == TextureFormat.RGBA32 ? TextureFormat.RGBA32 : TextureFormat.RGB24;
             Texture2D scaledTexture = new Texture2D(newWidth, newHeight, targetFormat, false);
-            scaledTexture.ReadPixels(new Rect(0, 0, newWidth, newHeight), 0, 0);
-            scaledTexture.Apply();
             
-            // Восстанавливаем активный RenderTexture
-            RenderTexture.active = previous;
-            RenderTexture.ReleaseTemporary(renderTexture);
+            try
+            {
+                RenderTexture.active = renderTexture;
+                
+                // Копируем исходную текстуру в RenderTexture с масштабированием
+                Graphics.Blit(texture, renderTexture);
+                
+                // Читаем пиксели из RenderTexture
+                scaledTexture.ReadPixels(new Rect(0, 0, newWidth, newHeight), 0, 0);
+                scaledTexture.Apply();
+            }
+            finally
+            {
+                // Восстанавливаем активный RenderTexture и освобождаем временный
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(renderTexture);
+            }
             
             Debug.Log($"[MarkerImageService] Масштабирование завершено: {scaledTexture.width}x{scaledTexture.height}, формат: {scaledTexture.format}, readable: {scaledTexture.isReadable}");
             

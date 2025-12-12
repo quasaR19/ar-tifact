@@ -5,6 +5,9 @@ out
 dist
 build
 
+# Unity
+android/
+
 # Generated files
 *.min.js
 *.min.css

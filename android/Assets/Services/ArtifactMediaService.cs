@@ -20,9 +20,11 @@ namespace ARArtifact.Services
         {
             public string url;
             public string localPath;
+            public string artifactId; // Для отслеживания прогресса
             public readonly List<Action<string>> onSuccess = new();
             public readonly List<Action<string>> onError = new();
             public Coroutine coroutine;
+            public float Progress; // Прогресс загрузки (0-1)
         }
 
         private static ArtifactMediaService _instance;
@@ -35,19 +37,19 @@ namespace ARArtifact.Services
                     var go = new GameObject("ArtifactMediaService");
                     _instance = go.AddComponent<ArtifactMediaService>();
                     DontDestroyOnLoad(go);
-                    Debug.Log($"{LogPrefix} Создан Singleton экземпляр");
                 }
 
                 return _instance;
             }
         }
 
-        private readonly Dictionary<string, DownloadOperation> activeDownloads = new();
+        private readonly Dictionary<string, DownloadOperation> activeDownloads = new(); // Ключ: URL
+        private readonly Dictionary<string, DownloadOperation> activeDownloadsByArtifactId = new(); // Ключ: artifactId
+        private readonly Queue<DownloadOperation> pendingDownloads = new(); // Очередь ожидания загрузок
         private ArtifactStorage storage;
 
         // Настройки управления памятью
         [Header("Download Settings")]
-        [SerializeField] private float downloadTimeoutSeconds = 60f; // Таймаут загрузки
         [SerializeField] private int maxParallelDownloads = 3; // Максимум параллельных загрузок
 
         private void Awake()
@@ -83,7 +85,7 @@ namespace ARArtifact.Services
             }
 
             string localPath = storage.GetMediaFilePath(artifactId, mediaId, remoteUrl);
-            EnqueueDownload(remoteUrl, localPath, onSuccess, onError);
+            EnqueueDownload(remoteUrl, localPath, artifactId, onSuccess, onError);
         }
 
     /// <summary>
@@ -98,7 +100,7 @@ namespace ARArtifact.Services
         }
 
         string localPath = storage.GetPreviewFilePath(artifactId, remoteUrl);
-        EnqueueDownload(remoteUrl, localPath, onSuccess, onError);
+        EnqueueDownload(remoteUrl, localPath, null, onSuccess, onError); // Превью не отслеживаем по artifactId
     }
 
     /// <summary>
@@ -113,7 +115,7 @@ namespace ARArtifact.Services
         }
 
         string localPath = storage.GetMediaFilePath(artifactId, mediaId, remoteUrl);
-        EnqueueDownload(remoteUrl, localPath, onSuccess, onError);
+        EnqueueDownload(remoteUrl, localPath, artifactId, onSuccess, onError); // Отслеживаем видео по artifactId для автовосстановления
     }
 
         /// <summary>
@@ -135,10 +137,16 @@ namespace ARArtifact.Services
             }
 
             activeDownloads.Clear();
-            Debug.Log($"{LogPrefix} Все активные загрузки отменены");
+            activeDownloadsByArtifactId.Clear();
+            
+            while (pendingDownloads.Count > 0)
+            {
+                var operation = pendingDownloads.Dequeue();
+                NotifyError(operation, "Загрузка отменена");
+            }
         }
 
-        private void EnqueueDownload(string remoteUrl, string localPath, Action<string> onSuccess, Action<string> onError)
+        private void EnqueueDownload(string remoteUrl, string localPath, string artifactId, Action<string> onSuccess, Action<string> onError)
         {
             if (string.IsNullOrEmpty(remoteUrl))
             {
@@ -163,7 +171,6 @@ namespace ARArtifact.Services
 
             if (File.Exists(localPath))
             {
-                Debug.Log($"{LogPrefix} Файл уже сохранен, используем кеш: {localPath}");
                 onSuccess?.Invoke(localPath);
                 return;
             }
@@ -172,36 +179,31 @@ namespace ARArtifact.Services
             {
                 existingOperation.onSuccess.Add(onSuccess);
                 existingOperation.onError.Add(onError);
-                Debug.Log($"{LogPrefix} Повторный запрос на {remoteUrl} добавлен в очередь ожидания");
-                return;
-            }
-
-            // Проверяем ограничение параллельных загрузок
-            if (activeDownloads.Count >= maxParallelDownloads)
-            {
-                Debug.LogWarning($"{LogPrefix} Достигнут лимит параллельных загрузок ({maxParallelDownloads}), ожидание...");
-                // В реальном приложении можно добавить очередь ожидания
-                // Для простоты просто отказываем в загрузке
-                onError?.Invoke("Достигнут лимит параллельных загрузок, попробуйте позже");
                 return;
             }
 
             var operation = new DownloadOperation
             {
                 url = remoteUrl,
-                localPath = localPath
+                localPath = localPath,
+                artifactId = artifactId,
+                Progress = 0f
             };
             operation.onSuccess.Add(onSuccess);
             operation.onError.Add(onError);
-            activeDownloads[remoteUrl] = operation;
-            operation.coroutine = StartCoroutine(DownloadCoroutine(operation));
+            
+            if (activeDownloads.Count >= maxParallelDownloads)
+            {
+                pendingDownloads.Enqueue(operation);
+                return;
+            }
+
+            StartDownload(operation);
         }
 
         private IEnumerator DownloadCoroutine(DownloadOperation operation)
         {
-            Debug.Log($"{LogPrefix} Начата загрузка {operation.url} -> {operation.localPath}");
 
-            float startTime = Time.time;
             bool completed = false;
             string error = null;
 
@@ -210,16 +212,42 @@ namespace ARArtifact.Services
                 request.downloadHandler = new DownloadHandlerFile(operation.localPath);
                 var sendRequest = request.SendWebRequest();
 
-                // Ожидаем завершения с таймаутом
+                // Ожидаем завершения без таймаута, обновляя прогресс
                 while (!sendRequest.isDone)
                 {
-                    if (Time.time - startTime > downloadTimeoutSeconds)
+                    // Обновляем прогресс загрузки
+                    if (request.downloadedBytes > 0)
                     {
-                        request.Abort();
-                        error = $"Таймаут загрузки ({downloadTimeoutSeconds}с)";
-                        Debug.LogError($"{LogPrefix} {error}: {operation.url}");
-                        completed = true;
-                        break;
+                        long? contentLength = null;
+                        string contentLengthHeader = request.GetResponseHeader("Content-Length");
+                        if (!string.IsNullOrEmpty(contentLengthHeader) && long.TryParse(contentLengthHeader, out long length))
+                        {
+                            contentLength = length;
+                        }
+                        
+                        if (contentLength.HasValue && contentLength.Value > 0)
+                        {
+                            operation.Progress = Mathf.Clamp01((float)request.downloadedBytes / contentLength.Value);
+                        }
+                        else
+                        {
+                            // Если размер неизвестен, используем приблизительный прогресс на основе времени
+                            // (но это не очень точно, лучше использовать размер файла на диске)
+                            if (File.Exists(operation.localPath))
+                            {
+                                try
+                                {
+                                    var fileInfo = new FileInfo(operation.localPath);
+                                    // Предполагаем, что файл будет примерно такого же размера, как уже скачано
+                                    // Это приблизительная оценка
+                                    operation.Progress = Mathf.Clamp01(0.1f + (fileInfo.Length / 1000000f) * 0.8f); // 0.1-0.9
+                                }
+                                catch
+                                {
+                                    // Игнорируем ошибки доступа к файлу
+                                }
+                            }
+                        }
                     }
                     yield return null;
                 }
@@ -227,17 +255,17 @@ namespace ARArtifact.Services
                 if (!completed)
                 {
                     if (request.result != UnityWebRequest.Result.Success)
-                {
-                        error = $"HTTP {request.responseCode}: {request.error}";
-                    Debug.LogError($"{LogPrefix} Ошибка загрузки {operation.url}: {error}");
-                    if (File.Exists(operation.localPath))
                     {
-                        File.Delete(operation.localPath);
+                        error = $"HTTP {request.responseCode}: {request.error}";
+                        Debug.LogError($"{LogPrefix} Ошибка загрузки {operation.url}: {error}");
+                        if (File.Exists(operation.localPath))
+                        {
+                            File.Delete(operation.localPath);
+                        }
+                        NotifyError(operation, error);
                     }
-                    NotifyError(operation, error);
-                }
-                else
-                {
+                    else
+                    {
                         // Убеждаемся, что файл полностью записан на диск
                         yield return StartCoroutine(WaitForFileComplete(operation.localPath));
                         
@@ -268,8 +296,9 @@ namespace ARArtifact.Services
                                 }
                                 else
                                 {
-                                    Debug.Log($"{LogPrefix} Файл загружен: {operation.localPath}, размер: {fileInfo.Length} байт");
-                    NotifySuccess(operation);
+                                    // Устанавливаем прогресс на 100% перед уведомлением об успехе
+                                    operation.Progress = 1.0f;
+                                    NotifySuccess(operation);
                                 }
                             }
                         }
@@ -281,22 +310,47 @@ namespace ARArtifact.Services
                         }
                     }
                 }
-                else
-                {
-                    // Обработка таймаута
-                    if (File.Exists(operation.localPath))
-                    {
-                        File.Delete(operation.localPath);
-                    }
-                    NotifyError(operation, error);
-                }
             }
 
             activeDownloads.Remove(operation.url);
+            if (!string.IsNullOrEmpty(operation.artifactId))
+            {
+                activeDownloadsByArtifactId.Remove(operation.artifactId);
+            }
             
-            // Очищаем колбэки для предотвращения утечек памяти
             operation.onSuccess.Clear();
             operation.onError.Clear();
+            
+            ProcessQueue();
+        }
+        
+        private void StartDownload(DownloadOperation operation)
+        {
+            activeDownloads[operation.url] = operation;
+            if (!string.IsNullOrEmpty(operation.artifactId))
+            {
+                activeDownloadsByArtifactId[operation.artifactId] = operation;
+            }
+            operation.coroutine = StartCoroutine(DownloadCoroutine(operation));
+        }
+        
+        private void ProcessQueue()
+        {
+            while (activeDownloads.Count < maxParallelDownloads && pendingDownloads.Count > 0)
+            {
+                var nextOperation = pendingDownloads.Dequeue();
+                
+                if (activeDownloads.ContainsKey(nextOperation.url))
+                {
+                    var existingOperation = activeDownloads[nextOperation.url];
+                    existingOperation.onSuccess.AddRange(nextOperation.onSuccess);
+                    existingOperation.onError.AddRange(nextOperation.onError);
+                }
+                else
+                {
+                    StartDownload(nextOperation);
+                }
+            }
         }
 
         private void NotifySuccess(DownloadOperation operation)
@@ -329,9 +383,6 @@ namespace ARArtifact.Services
             }
         }
         
-        /// <summary>
-        /// Ожидает завершения записи файла на диск
-        /// </summary>
         private IEnumerator WaitForFileComplete(string filePath, float maxWaitTime = 5f, float checkInterval = 0.1f)
         {
             if (!File.Exists(filePath))
@@ -356,8 +407,6 @@ namespace ARArtifact.Services
                         stableCount++;
                         if (stableCount >= requiredStableChecks)
                         {
-                            // Размер файла стабилен, запись завершена
-                            Debug.Log($"{LogPrefix} Файл стабилизирован: {filePath}, размер: {currentSize} байт");
                             yield break;
                         }
                     }
@@ -376,6 +425,37 @@ namespace ARArtifact.Services
             }
             
             Debug.LogWarning($"{LogPrefix} Таймаут ожидания завершения записи файла: {filePath}");
+        }
+        
+        public (int active, int pending) GetDownloadStats()
+        {
+            return (activeDownloads.Count, pendingDownloads.Count);
+        }
+        
+        /// <summary>
+        /// Проверяет, загружается ли файл для указанного артефакта
+        /// </summary>
+        public bool IsDownloading(string artifactId)
+        {
+            return !string.IsNullOrEmpty(artifactId) && activeDownloadsByArtifactId.ContainsKey(artifactId);
+        }
+        
+        /// <summary>
+        /// Получает прогресс загрузки файла для указанного артефакта (0-1)
+        /// </summary>
+        public float GetDownloadProgress(string artifactId)
+        {
+            if (string.IsNullOrEmpty(artifactId))
+            {
+                return 0f;
+            }
+            
+            if (activeDownloadsByArtifactId.TryGetValue(artifactId, out var operation))
+            {
+                return operation.Progress;
+            }
+            
+            return 0f;
         }
     }
 }

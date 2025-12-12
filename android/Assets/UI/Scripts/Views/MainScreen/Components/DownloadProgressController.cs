@@ -16,6 +16,7 @@ namespace ARArtifact.UI
 
         private VisualElement container;
         private ModelLoaderService modelLoader;
+        private ArtifactMediaService mediaService;
         private MonoBehaviour coroutineHost;
         private readonly Dictionary<string, DownloadProgressItem> activeDownloads = new();
         private Coroutine updateCoroutine;
@@ -29,7 +30,8 @@ namespace ARArtifact.UI
             public string DisplayName;
             public VisualElement ItemElement;
             public Label TitleLabel;
-            public ProgressBar ProgressBar;
+            public VisualElement ProgressContainer; // Внешний контейнер (фон)
+            public VisualElement ProgressBar; // Внутренняя полоска прогресса
             public float LastProgress;
             public bool IsCompleted;
         }
@@ -39,6 +41,12 @@ namespace ARArtifact.UI
             this.container = container;
             this.coroutineHost = coroutineHost;
             modelLoader = ModelLoaderService.Instance;
+            mediaService = ArtifactMediaService.Instance;
+            
+            if (container == null)
+            {
+                Debug.LogError($"{LogPrefix} Container is null при инициализации!");
+            }
             
             // Если coroutineHost не передан, пытаемся найти через userData
             if (this.coroutineHost == null && container?.panel != null)
@@ -54,6 +62,8 @@ namespace ARArtifact.UI
                     root = root.parent;
                 }
             }
+            
+            Debug.Log($"{LogPrefix} Инициализирован: container={container != null}, coroutineHost={coroutineHost != null}");
         }
 
         /// <summary>
@@ -96,24 +106,43 @@ namespace ARArtifact.UI
             item.TitleLabel = new Label(GetDisplayText(item.DisplayName));
             item.TitleLabel.AddToClassList("download-title");
 
-            item.ProgressBar = new ProgressBar();
-            item.ProgressBar.AddToClassList("download-progress");
-            item.ProgressBar.value = 0f;
-            item.ProgressBar.lowValue = 0f;
-            item.ProgressBar.highValue = 100f;
+            // Создаем контейнер прогресса (фон)
+            item.ProgressContainer = new VisualElement();
+            item.ProgressContainer.AddToClassList("download-progress-track");
+            item.ProgressContainer.style.width = new StyleLength(new Length(100f, LengthUnit.Percent));
+            item.ProgressContainer.style.height = new StyleLength(8f);
+            
+            // Создаем полоску прогресса (заполненная часть)
+            item.ProgressBar = new VisualElement();
+            item.ProgressBar.AddToClassList("download-progress-bar");
+            item.ProgressBar.style.width = new StyleLength(new Length(0f, LengthUnit.Percent));
+            item.ProgressBar.style.height = new StyleLength(new Length(100f, LengthUnit.Percent));
+            
+            item.ProgressContainer.Add(item.ProgressBar);
 
             item.ItemElement.Add(item.TitleLabel);
-            item.ItemElement.Add(item.ProgressBar);
+            item.ItemElement.Add(item.ProgressContainer);
 
-            container.Add(item.ItemElement);
-            activeDownloads[artifactId] = item;
-
-            Debug.Log($"{LogPrefix} Начато отслеживание загрузки: artifactId={artifactId}, displayName={displayName}");
+            if (container != null)
+            {
+                container.Add(item.ItemElement);
+                activeDownloads[artifactId] = item;
+                Debug.Log($"{LogPrefix} Начато отслеживание загрузки: artifactId={artifactId}, displayName={displayName}, container={container != null}");
+            }
+            else
+            {
+                Debug.LogError($"{LogPrefix} Container is null! Не могу добавить элемент прогресса для {artifactId}");
+            }
 
             // Запускаем корутину обновления, если еще не запущена
             if (updateCoroutine == null && coroutineHost != null)
             {
                 updateCoroutine = coroutineHost.StartCoroutine(UpdateProgressCoroutine());
+                Debug.Log($"{LogPrefix} Корутина обновления прогресса запущена для {artifactId}");
+            }
+            else if (updateCoroutine == null)
+            {
+                Debug.LogWarning($"{LogPrefix} Не удалось запустить корутину обновления прогресса: coroutineHost={(coroutineHost != null ? "OK" : "NULL")}");
             }
         }
 
@@ -135,9 +164,14 @@ namespace ARArtifact.UI
                 }
                 else
                 {
-                    // Помечаем как завершенную, но оставляем на экране на короткое время
+                    // Помечаем как завершенную и устанавливаем прогресс на 100%
                     item.IsCompleted = true;
-                    item.ProgressBar.value = 100f;
+                    if (item.ProgressBar != null)
+                    {
+                        item.ProgressBar.style.width = new StyleLength(new Length(100f, LengthUnit.Percent));
+                        item.ProgressBar.MarkDirtyRepaint();
+                    }
+                    // Корутина сама удалит элемент при следующей итерации
                 }
             }
         }
@@ -175,61 +209,63 @@ namespace ARArtifact.UI
                     if (modelLoader == null)
                     {
                         modelLoader = ModelLoaderService.Instance;
-                        if (modelLoader == null)
-                        {
-                            yield return new WaitForSeconds(0.5f);
-                            continue;
-                        }
+                    }
+                    
+                    if (mediaService == null)
+                    {
+                        mediaService = ArtifactMediaService.Instance;
+                    }
+                    
+                    if (modelLoader == null && mediaService == null)
+                    {
+                        yield return new WaitForSeconds(0.5f);
+                        continue;
                     }
 
-                    // Проверяем, загружается ли еще модель
-                    if (modelLoader.IsLoading(artifactId))
+                    float progress = 0f;
+                    
+                    // Сначала проверяем, идет ли скачивание из облака
+                    if (mediaService != null && mediaService.IsDownloading(artifactId))
                     {
-                        // Обновляем прогресс
-                        float progress = modelLoader.GetModelProgress(artifactId) * 100f;
-                        if (Mathf.Abs(progress - item.LastProgress) > 0.1f) // Обновляем только при заметном изменении
-                        {
-                            item.LastProgress = progress;
-                            if (item.ProgressBar != null)
-                            {
-                                item.ProgressBar.value = progress;
-                            }
-                        }
+                        // Прогресс скачивания из облака: 0-50%
+                        float cloudProgress = mediaService.GetDownloadProgress(artifactId);
+                        progress = cloudProgress * 50f; // 0-50% для скачивания из облака
+                    }
+                    // Затем проверяем, идет ли загрузка модели на сцену
+                    else if (modelLoader != null && modelLoader.IsLoading(artifactId))
+                    {
+                        // Прогресс загрузки на сцену: 50-100%
+                        float modelProgress = modelLoader.GetModelProgress(artifactId);
+                        progress = 50f + (modelProgress * 50f); // 50-100% для загрузки на сцену
                     }
                     else
                     {
-                        // Модель больше не загружается
-                        if (modelLoader.TryGetLoadedModel(artifactId, out _))
+                        // Ни скачивание, ни загрузка не идут
+                        // Проверяем, завершена ли загрузка
+                        if (modelLoader != null && modelLoader.TryGetLoadedModel(artifactId, out _))
                         {
-                            // Модель уже загружена (возможно, из кэша)
-                            // Если она была загружена из кэша и отслеживание началось по ошибке, удаляем сразу
-                            // Если она только что завершила загрузку, показываем 100% и удаляем через 1 секунду
-                            if (!item.IsCompleted)
-                            {
-                                item.IsCompleted = true;
-                                item.ProgressBar.value = 100f;
-                                
-                                // Проверяем, была ли это загрузка из кэша (прогресс был 0 и модель уже загружена)
-                                // В этом случае удаляем сразу, без задержки
-                                if (item.LastProgress == 0f)
-                                {
-                                    Debug.Log($"{LogPrefix} Модель уже загружена из кэша, удаляем прогресс-бар: artifactId={artifactId}");
-                                    toRemove.Add(artifactId);
-                                }
-                                else
-                                {
-                                    Debug.Log($"{LogPrefix} Загрузка завершена: artifactId={artifactId}");
-                                    // Удаляем через 1 секунду после завершения
-                                    yield return new WaitForSeconds(1f);
-                                    toRemove.Add(artifactId);
-                                }
-                            }
+                            // Модель успешно загружена - удаляем сразу
+                            Debug.Log($"{LogPrefix} Загрузка завершена, удаляем прогресс-бар: artifactId={artifactId}");
+                            toRemove.Add(artifactId);
                         }
                         else
                         {
-                            // Модель не загружена (возможно, ошибка) - удаляем сразу
+                            // Модель не загружена (возможно, ошибка или еще не началась) - удаляем сразу
                             Debug.LogWarning($"{LogPrefix} Загрузка не найдена или завершена с ошибкой: artifactId={artifactId}");
                             toRemove.Add(artifactId);
+                        }
+                        continue;
+                    }
+                    
+                    // Обновляем прогресс-бар при любом изменении
+                    if (Mathf.Abs(progress - item.LastProgress) > 0.01f) // Обновляем при изменении больше 0.01%
+                    {
+                        item.LastProgress = progress;
+                        if (item.ProgressBar != null)
+                        {
+                            item.ProgressBar.style.width = new StyleLength(new Length(progress, LengthUnit.Percent));
+                            // Принудительно обновляем отображение
+                            item.ProgressBar.MarkDirtyRepaint();
                         }
                     }
                 }
@@ -240,7 +276,7 @@ namespace ARArtifact.UI
                     RemoveItem(artifactId);
                 }
 
-                yield return new WaitForSeconds(0.1f); // Обновляем каждые 0.1 секунды
+                yield return new WaitForSeconds(0.05f); // Обновляем каждые 0.05 секунды для более плавного прогресса
             }
 
             updateCoroutine = null;

@@ -35,9 +35,9 @@ namespace ARArtifact.UI
         // State
         private bool isLoading;
         private bool isPrepared;
-        private bool isPlaying;
-        private bool isScrubbing;
-        private Coroutine updateCoroutine;
+        private bool isUserScrubbing; // Флаг для блокировки программных обновлений слайдера во время перемотки
+        private bool wasPlayingBeforeScrub; // Сохраняем состояние воспроизведения перед перемоткой
+        private Coroutine updateCoroutine; // Единая корутина обновления UI
         
         private void Awake()
         {
@@ -107,23 +107,76 @@ namespace ARArtifact.UI
                 progressSlider.highValue = 1;
                 progressSlider.value = 0;
                 
-                progressSlider.RegisterValueChangedCallback(evt =>
+                // Обработка начала перетаскивания - используем несколько типов событий для надежности
+                progressSlider.RegisterCallback<MouseDownEvent>(evt =>
                 {
-                    if (isScrubbing)
-                    {
-                        OnProgressChanged(evt.newValue);
-                    }
+                    if (!isPrepared) return;
+                    StartScrubbing();
+                    evt.StopPropagation();
                 });
                 
-                // Обработка scrubbing
                 progressSlider.RegisterCallback<PointerDownEvent>(evt =>
                 {
-                    isScrubbing = true;
+                    if (!isPrepared) return;
+                    StartScrubbing();
+                    evt.StopPropagation();
+                });
+                
+                // Обработка завершения перетаскивания
+                progressSlider.RegisterCallback<MouseUpEvent>(evt =>
+                {
+                    if (isUserScrubbing)
+                    {
+                        EndScrubbing();
+                        evt.StopPropagation();
+                    }
                 });
                 
                 progressSlider.RegisterCallback<PointerUpEvent>(evt =>
                 {
-                    isScrubbing = false;
+                    if (isUserScrubbing)
+                    {
+                        EndScrubbing();
+                        evt.StopPropagation();
+                    }
+                });
+                
+                // Обработка отмены перетаскивания
+                progressSlider.RegisterCallback<PointerCancelEvent>(evt =>
+                {
+                    if (isUserScrubbing)
+                    {
+                        CancelScrubbing();
+                    }
+                });
+                
+                // Обработка изменения значения слайдера
+                // Если значение изменилось значительно и мы еще не в режиме scrubbing,
+                // это может быть начало перетаскивания (если PointerDownEvent не сработал)
+                progressSlider.RegisterValueChangedCallback(evt =>
+                {
+                    if (!isPrepared) return;
+                    
+                    float newValue = evt.newValue;
+                    float currentVideoTime = (float)videoPlayer.time;
+                    float difference = Mathf.Abs(newValue - currentVideoTime);
+                    
+                    // Если мы уже в режиме scrubbing, обновляем время
+                    if (isUserScrubbing)
+                    {
+                        OnProgressChanged(newValue);
+                        return;
+                    }
+                    
+                    // Если значение сильно отличается от текущего времени видео (больше 0.5 секунды),
+                    // это похоже на начало перетаскивания - начинаем scrubbing
+                    if (difference > 0.5f && videoPlayer.isPlaying)
+                    {
+                        Debug.Log($"{LogPrefix} Обнаружено начало перетаскивания через ValueChanged: разница={difference:F2}s");
+                        StartScrubbing();
+                        OnProgressChanged(newValue);
+                    }
+                    // Иначе это программное изменение из корутины - игнорируем
                 });
             }
             
@@ -157,6 +210,24 @@ namespace ARArtifact.UI
                 return;
             }
             
+            // Проверяем размер файла
+            try
+            {
+                var fileInfo = new System.IO.FileInfo(localPath);
+                long fileSizeMB = fileInfo.Length / (1024 * 1024);
+                Debug.Log($"{LogPrefix} Размер видеофайла: {fileSizeMB} MB ({fileInfo.Length} байт)");
+                
+                // Предупреждение для очень больших файлов
+                if (fileSizeMB > 50)
+                {
+                    Debug.LogWarning($"{LogPrefix} Большой видеофайл ({fileSizeMB} MB), загрузка может занять больше времени");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"{LogPrefix} Не удалось получить информацию о файле: {e.Message}");
+            }
+            
             isLoading = true;
             isPrepared = false;
             UpdateStatus("Загрузка видео...");
@@ -166,7 +237,11 @@ namespace ARArtifact.UI
             #if UNITY_ANDROID && !UNITY_EDITOR
             videoUrl = localPath; // Android не требует file:// префикс
             #else
-            videoUrl = "file://" + localPath;
+            // Нормализуем путь: заменяем все обратные слеши на прямые
+            string normalizedPath = System.IO.Path.GetFullPath(localPath).Replace('\\', '/');
+            // Для абсолютных путей на Windows используем формат file:///C:/path (три слеша)
+            videoUrl = "file:///" + normalizedPath;
+            Debug.Log($"{LogPrefix} Нормализованный URL: {videoUrl} (исходный путь: {localPath})");
             #endif
             
             Debug.Log($"{LogPrefix} Загрузка видео: path={localPath}, url={videoUrl}, exists={System.IO.File.Exists(localPath)}");
@@ -187,8 +262,8 @@ namespace ARArtifact.UI
             
             videoPlayer.Prepare();
             
-            // Ждем подготовки или ошибки
-            float timeout = 30f; // 30 секунд таймаут
+            // Увеличиваем таймаут для больших файлов (до 60 секунд)
+            float timeout = 60f;
             float elapsed = 0f;
             
             while (!isPrepared && elapsed < timeout)
@@ -232,6 +307,21 @@ namespace ARArtifact.UI
         /// </summary>
         private void OnVideoPrepared(VideoPlayer source)
         {
+            // Проверяем валидность видео: длительность должна быть больше 0 и не NaN
+            bool isValidVideo = source.length > 0 && !double.IsNaN(source.length) && !double.IsInfinity(source.length);
+            
+            if (!isValidVideo)
+            {
+                Debug.LogError($"{LogPrefix} Видео подготовлено, но имеет невалидную длительность: {source.length}s. Файл может быть битым.");
+                isLoading = false;
+                isPrepared = false;
+                
+                string errorMsg = "Видеофайл не имеет метаданных длины (файл может быть поврежден или неполон)";
+                UpdateStatus($"Ошибка: {errorMsg}");
+                OnVideoError(source, errorMsg);
+                return;
+            }
+            
             isPrepared = true;
             
             // Обновляем UI
@@ -242,6 +332,13 @@ namespace ARArtifact.UI
             
             UpdateTimeLabel();
             
+            // Запускаем корутину обновления UI
+            if (updateCoroutine != null)
+            {
+                StopCoroutine(updateCoroutine);
+            }
+            updateCoroutine = StartCoroutine(UpdateProgressCoroutine());
+            
             Debug.Log($"{LogPrefix} Видео подготовлено: длительность={source.length}s, размер={source.width}x{source.height}");
         }
         
@@ -250,7 +347,6 @@ namespace ARArtifact.UI
         /// </summary>
         private void OnVideoFinished(VideoPlayer source)
         {
-            isPlaying = false;
             UpdatePlayPauseButton();
             Debug.Log($"{LogPrefix} Видео завершено");
         }
@@ -262,9 +358,46 @@ namespace ARArtifact.UI
         {
             isLoading = false;
             isPrepared = false;
-            string shortError = message.Length > 50 ? message.Substring(0, 50) + "..." : message;
+            
+            // Улучшаем сообщение об ошибке для более понятного вывода
+            string improvedMessage = message;
+            if (message.Contains("0xc00d36e6") || message.Contains("Cannot read file"))
+            {
+                improvedMessage = $"Не удалось прочитать видеофайл. Возможно, файл поврежден, недоступен или имеет неподдерживаемый формат. URL: {source.url}. Оригинальная ошибка: {message}";
+                
+                // Проверяем размер файла для диагностики
+                try
+                {
+                    if (source.url.StartsWith("file://"))
+                    {
+                        string filePath = source.url.Replace("file:///", "").Replace("file://", "");
+                        if (System.IO.File.Exists(filePath))
+                        {
+                            var fileInfo = new System.IO.FileInfo(filePath);
+                            long fileSizeMB = fileInfo.Length / (1024 * 1024);
+                            improvedMessage += $" Размер файла: {fileSizeMB} MB.";
+                            
+                            // Предупреждение для очень больших файлов
+                            if (fileSizeMB > 50)
+                            {
+                                improvedMessage += " Файл очень большой, возможно требуется больше времени для подготовки.";
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"{LogPrefix} Не удалось получить информацию о файле: {e.Message}");
+                }
+            }
+            else if (message.Contains("WindowsVideoMedia error"))
+            {
+                improvedMessage = $"Ошибка WindowsVideoMedia при чтении видео. Возможно, файл поврежден или имеет неподдерживаемый формат. URL: {source.url}. Оригинальная ошибка: {message}";
+            }
+            
+            string shortError = improvedMessage.Length > 100 ? improvedMessage.Substring(0, 100) + "..." : improvedMessage;
             UpdateStatus($"Ошибка: {shortError}");
-            Debug.LogError($"{LogPrefix} Ошибка воспроизведения: {message}, url={source.url}, source={source.source}, isPrepared={source.isPrepared}");
+            Debug.LogError($"{LogPrefix} Ошибка воспроизведения: {improvedMessage}, url={source.url}, source={source.source}, isPrepared={source.isPrepared}");
         }
         
         /// <summary>
@@ -274,7 +407,7 @@ namespace ARArtifact.UI
         {
             if (!isPrepared) return;
             
-            if (isPlaying)
+            if (videoPlayer.isPlaying)
             {
                 Pause();
             }
@@ -292,15 +425,7 @@ namespace ARArtifact.UI
             if (!isPrepared) return;
             
             videoPlayer.Play();
-            isPlaying = true;
-            UpdatePlayPauseButton();
-            
-            // Запускаем корутину для обновления прогресса
-            if (updateCoroutine != null)
-            {
-                StopCoroutine(updateCoroutine);
-            }
-            updateCoroutine = StartCoroutine(UpdateProgressCoroutine());
+            // UI обновится автоматически через корутину обновления
         }
         
         /// <summary>
@@ -311,15 +436,7 @@ namespace ARArtifact.UI
             if (!isPrepared) return;
             
             videoPlayer.Pause();
-            isPlaying = false;
-            UpdatePlayPauseButton();
-            
-            // Останавливаем корутину обновления
-            if (updateCoroutine != null)
-            {
-                StopCoroutine(updateCoroutine);
-                updateCoroutine = null;
-            }
+            // UI обновится автоматически через корутину обновления
         }
         
         /// <summary>
@@ -328,14 +445,143 @@ namespace ARArtifact.UI
         public void Stop()
         {
             videoPlayer.Stop();
-            isPlaying = false;
-            UpdatePlayPauseButton();
+            // UI обновится автоматически через корутину обновления
+        }
+        
+        /// <summary>
+        /// Начинает перемотку (scrubbing).
+        /// </summary>
+        private void StartScrubbing()
+        {
+            if (!isPrepared || isUserScrubbing) return;
             
-            if (updateCoroutine != null)
+            // Сохраняем состояние воспроизведения перед началом перемотки
+            wasPlayingBeforeScrub = videoPlayer.isPlaying;
+            
+            // Приостанавливаем воспроизведение во время перемотки
+            // Делаем это явно, даже если видео уже на паузе
+            if (videoPlayer.isPlaying)
             {
-                StopCoroutine(updateCoroutine);
-                updateCoroutine = null;
+                videoPlayer.Pause();
+                // Убеждаемся, что видео действительно остановилось
+                // Небольшая задержка может потребоваться для некоторых платформ
+                if (videoPlayer.isPlaying)
+                {
+                    Debug.LogWarning($"{LogPrefix} Видео не остановилось после Pause(), пытаемся еще раз");
+                    videoPlayer.Pause();
+                }
             }
+            
+            isUserScrubbing = true;
+            
+            Debug.Log($"{LogPrefix} Начало перемотки, было воспроизведение: {wasPlayingBeforeScrub}, сейчас: {videoPlayer.isPlaying}");
+        }
+        
+        /// <summary>
+        /// Завершает перемотку (scrubbing).
+        /// </summary>
+        private void EndScrubbing()
+        {
+            if (!isUserScrubbing) return;
+            
+            // Устанавливаем финальное время видео
+            if (progressSlider != null && isPrepared)
+            {
+                OnProgressChanged(progressSlider.value);
+            }
+            
+            isUserScrubbing = false;
+            
+            // Принудительно обновляем слайдер текущим временем видео
+            // Это гарантирует, что слайдер синхронизирован с VideoPlayer
+            if (progressSlider != null && isPrepared)
+            {
+                float currentTime = (float)videoPlayer.time;
+                progressSlider.SetValueWithoutNotify(currentTime);
+            }
+            
+            // Возобновляем воспроизведение, если оно было до перемотки
+            if (wasPlayingBeforeScrub)
+            {
+                // Используем корутину для небольшой задержки перед возобновлением
+                // Это дает VideoPlayer время обработать изменение времени
+                StartCoroutine(ResumeAfterScrubCoroutine());
+            }
+            else
+            {
+                // Если видео не воспроизводилось, все равно обновляем UI
+                UpdateTimeLabel();
+            }
+            
+            // Убеждаемся, что корутина обновления запущена
+            if (updateCoroutine == null && isPrepared)
+            {
+                updateCoroutine = StartCoroutine(UpdateProgressCoroutine());
+            }
+            
+            Debug.Log($"{LogPrefix} Завершение перемотки, установлено время: {progressSlider?.value ?? 0f}, возобновлено воспроизведение: {wasPlayingBeforeScrub}, корутина запущена: {updateCoroutine != null}");
+        }
+        
+        /// <summary>
+        /// Корутина для возобновления воспроизведения после перемотки.
+        /// Небольшая задержка дает VideoPlayer время обработать изменение времени.
+        /// </summary>
+        private IEnumerator ResumeAfterScrubCoroutine()
+        {
+            // Сохраняем состояние локально
+            bool shouldResume = wasPlayingBeforeScrub;
+            
+            // Небольшая задержка для обработки изменения времени
+            yield return new WaitForEndOfFrame();
+            yield return null;
+            yield return new WaitForSeconds(0.05f); // Дополнительная небольшая задержка
+            
+            // Возобновляем воспроизведение
+            if (isPrepared && shouldResume && !isUserScrubbing)
+            {
+                videoPlayer.Play();
+                
+                // Проверяем, что видео действительно возобновилось
+                yield return new WaitForSeconds(0.1f);
+                if (!videoPlayer.isPlaying && shouldResume)
+                {
+                    Debug.LogWarning($"{LogPrefix} Видео не возобновилось, пытаемся еще раз");
+                    videoPlayer.Play();
+                }
+                
+                Debug.Log($"{LogPrefix} Воспроизведение возобновлено после перемотки, isPlaying={videoPlayer.isPlaying}");
+            }
+        }
+        
+        /// <summary>
+        /// Отменяет перемотку (scrubbing).
+        /// </summary>
+        private void CancelScrubbing()
+        {
+            if (!isUserScrubbing) return;
+            
+            // Возвращаем слайдер к текущему времени видео
+            if (isPrepared && progressSlider != null)
+            {
+                float currentTime = (float)videoPlayer.time;
+                progressSlider.SetValueWithoutNotify(currentTime);
+            }
+            
+            isUserScrubbing = false;
+            
+            // Возобновляем воспроизведение, если оно было до перемотки
+            if (wasPlayingBeforeScrub)
+            {
+                StartCoroutine(ResumeAfterScrubCoroutine());
+            }
+            
+            // Убеждаемся, что корутина обновления запущена
+            if (updateCoroutine == null && isPrepared)
+            {
+                updateCoroutine = StartCoroutine(UpdateProgressCoroutine());
+            }
+            
+            Debug.Log($"{LogPrefix} Отмена перемотки, возобновлено воспроизведение: {wasPlayingBeforeScrub}");
         }
         
         /// <summary>
@@ -345,37 +591,64 @@ namespace ARArtifact.UI
         {
             if (!isPrepared) return;
             
-            videoPlayer.time = value;
+            // Ограничиваем значение в пределах длительности видео
+            double clampedValue = Mathf.Clamp(value, 0f, (float)videoPlayer.length);
+            
+            // Убеждаемся, что видео на паузе во время перемотки
+            if (isUserScrubbing && videoPlayer.isPlaying)
+            {
+                Debug.LogWarning($"{LogPrefix} Видео все еще воспроизводится во время перемотки, приостанавливаем");
+                videoPlayer.Pause();
+            }
+            
+            // Устанавливаем время видео
+            // Во время scrubbing видео должно быть на паузе, поэтому просто устанавливаем время
+            videoPlayer.time = clampedValue;
+            
+            // Обновляем label времени
             UpdateTimeLabel();
+            
+            Debug.Log($"{LogPrefix} Перемотка: установлено время {clampedValue:F2}s из {videoPlayer.length:F2}s, isPlaying={videoPlayer.isPlaying}");
         }
         
         /// <summary>
         /// Корутина для обновления прогресса воспроизведения.
+        /// Работает постоянно, пока видео подготовлено.
         /// </summary>
         private IEnumerator UpdateProgressCoroutine()
         {
-            while (isPlaying)
+            while (isPrepared)
             {
-                if (!isScrubbing && progressSlider != null)
+                // Обновляем слайдер только если пользователь не перетаскивает его
+                if (!isUserScrubbing && progressSlider != null)
                 {
-                    progressSlider.SetValueWithoutNotify((float)videoPlayer.time);
+                    float currentTime = (float)videoPlayer.time;
+                    // Всегда обновляем слайдер, чтобы он показывал текущее время
+                    // Это важно даже когда видео на паузе, чтобы показать правильную позицию
+                    progressSlider.SetValueWithoutNotify(currentTime);
                 }
                 
+                // Обновляем UI элементы
                 UpdateTimeLabel();
+                UpdatePlayPauseButton();
                 
                 yield return new WaitForSeconds(0.1f); // Обновляем 10 раз в секунду
             }
+            
+            // Корутина завершена, очищаем ссылку
+            updateCoroutine = null;
+            Debug.Log($"{LogPrefix} Корутина обновления завершена");
         }
         
         /// <summary>
-        /// Обновляет кнопку Play/Pause.
+        /// Обновляет кнопку Play/Pause на основе фактического состояния VideoPlayer.
         /// </summary>
         private void UpdatePlayPauseButton()
         {
-            if (playPauseButton == null) return;
+            if (playPauseButton == null || !isPrepared) return;
             
-            // Меняем текст кнопки
-            playPauseButton.text = isPlaying ? "⏸" : "▶";
+            // Меняем текст кнопки на основе фактического состояния воспроизведения
+            playPauseButton.text = videoPlayer.isPlaying ? "⏸" : "▶";
         }
         
         /// <summary>

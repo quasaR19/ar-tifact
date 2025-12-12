@@ -19,7 +19,7 @@
                 <ui:VisualElement name="menu-header-container" class="menu-header-container">
                     <ui:Label name="menu-title" text="Меню" class="menu-title" />
                     <ui:Button name="menu-close-button" class="icon-button menu-close-button">
-                        <ui:Label text="×" class="icon icon-close" />
+                        <ui:Label text="x" class="icon icon-close" />
                     </ui:Button>
                 </ui:VisualElement>
                 <ui:VisualElement name="menu-items" class="menu-items" />

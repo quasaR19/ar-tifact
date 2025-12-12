@@ -79,17 +79,7 @@ function performCrop(
     }
 
     // Рисуем обрезанное изображение на canvas
-    ctx.drawImage(
-      img,
-      startX,
-      startY,
-      size,
-      size,
-      0,
-      0,
-      size,
-      size
-    );
+    ctx.drawImage(img, startX, startY, size, size, 0, 0, size, size);
 
     // Получаем data URL
     const dataUrl = canvas.toDataURL(mimeType, quality);
@@ -134,4 +124,3 @@ export function createFileFromCropped(
     type: croppedResult.blob.type,
   });
 }
-

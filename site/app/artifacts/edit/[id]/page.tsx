@@ -32,6 +32,12 @@ import { Loader2, Save, Trash2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { convertWebPToImage, isWebP } from "@/lib/image-converter";
+import {
+  extractVideoMetadata,
+  extractVideoMetadataFromUrl,
+  hasCompleteVideoMetadata,
+  videoMetadataToRecord,
+} from "@/lib/video-metadata";
 
 export default function ArtifactEditPage() {
   const params = useParams();
@@ -101,6 +107,49 @@ export default function ArtifactEditPage() {
           }));
         setLocalMedia(existingMedia);
 
+        // Асинхронно проверяем и обновляем метаданные для существующих видео
+        // Делаем это в фоне, не блокируя UI
+        (async () => {
+          const supabase = createClient();
+          for (const media of existingMedia) {
+            if (
+              media.type === "video" &&
+              !hasCompleteVideoMetadata(media.metadata) &&
+              media.url &&
+              media.id
+            ) {
+              try {
+                const videoMetadata = await extractVideoMetadataFromUrl(
+                  media.url
+                );
+                // Преобразуем VideoMetadata в Record<string, unknown>
+                const metadataRecord = videoMetadataToRecord(videoMetadata);
+                await updateArtifactMediaMetadata(
+                  supabase,
+                  media.id,
+                  metadataRecord
+                );
+                // Обновляем локальное состояние
+                setLocalMedia((prev) =>
+                  prev.map((m) =>
+                    m.id === media.id
+                      ? { ...m, metadata: metadataRecord }
+                      : m
+                  )
+                );
+                console.log(
+                  `[ArtifactEditPage] Обновлены метаданные для видео ${media.id}`
+                );
+              } catch (error) {
+                console.warn(
+                  `[ArtifactEditPage] Не удалось обновить метаданные для видео ${media.id}:`,
+                  error
+                );
+              }
+            }
+          }
+        })();
+
         // Преобразуем существующие таргеты в LocalTargetItem и анализируем качество
         const existingTargets: LocalTargetItem[] = await Promise.all(
           data.targets.map(async (t) => {
@@ -161,7 +210,17 @@ export default function ArtifactEditPage() {
   }, []);
 
   const handleMediaRemove = useCallback((id: string) => {
-    setLocalMedia((prev) => prev.filter((m) => m.id !== id));
+    setLocalMedia((prev) => {
+      // Удаляем элемент
+      const filtered = prev.filter((m) => m.id !== id);
+      // Нормализуем display_order: пересчитываем значения, чтобы они были непрерывными (0, 1, 2, ...)
+      return filtered
+        .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
+        .map((item, index) => ({
+          ...item,
+          display_order: index,
+        }));
+    });
   }, []);
 
   const handleMediaUpdate = useCallback(
@@ -589,10 +648,40 @@ export default function ArtifactEditPage() {
             const stepId = `update-media-${media.id}`;
             updateStepStatus(stepId, "processing");
             try {
+            // Для видео проверяем наличие метаданных и извлекаем, если отсутствуют
+            let finalMetadata = media.metadata || {};
+            if (
+              media.type === "video" &&
+              !hasCompleteVideoMetadata(media.metadata) &&
+              media.url
+            ) {
+              updateStepStatus(
+                stepId,
+                "processing",
+                undefined,
+                "Извлечение метаданных видео..."
+              );
+              try {
+                const videoMetadata = await extractVideoMetadataFromUrl(
+                  media.url
+                );
+                finalMetadata = {
+                  ...finalMetadata,
+                  ...videoMetadataToRecord(videoMetadata),
+                };
+              } catch (metadataError) {
+                console.warn(
+                  "[handleSave] Не удалось извлечь метаданные видео:",
+                  metadataError
+                );
+                // Продолжаем без метаданных
+              }
+            }
+
               await updateArtifactMediaMetadata(
                 supabase,
                 media.id,
-                media.metadata || {}
+                finalMetadata
               );
               updateStepStatus(stepId, "success");
             } catch (error) {
@@ -615,6 +704,30 @@ export default function ArtifactEditPage() {
           updateStepStatus(stepId, "processing");
 
           if (media.file) {
+            // Для видео проверяем наличие метаданных и извлекаем, если отсутствуют
+            let finalMetadata = media.metadata || {};
+            if (media.type === "video" && !hasCompleteVideoMetadata(media.metadata)) {
+              updateStepStatus(
+                stepId,
+                "processing",
+                undefined,
+                "Извлечение метаданных видео..."
+              );
+              try {
+                const videoMetadata = await extractVideoMetadata(media.file);
+                finalMetadata = {
+                  ...finalMetadata,
+                  ...videoMetadataToRecord(videoMetadata),
+                };
+              } catch (metadataError) {
+                console.warn(
+                  "[handleSave] Не удалось извлечь метаданные видео:",
+                  metadataError
+                );
+                // Продолжаем без метаданных
+              }
+            }
+
             // Загружаем файл в Blob
             updateStepStatus(
               stepId,
@@ -640,7 +753,7 @@ export default function ArtifactEditPage() {
               currentArtifactId,
               media.type,
               blobUrl,
-              media.metadata || null
+              Object.keys(finalMetadata).length > 0 ? finalMetadata : null
             );
             updateStepStatus(stepId, "success");
           } else if (media.url) {

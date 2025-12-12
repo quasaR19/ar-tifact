@@ -1,10 +1,35 @@
 /* Specific styles for DetailsScreen */
 
+/* ScrollView с фиксированной шириной и центрированием (как в HistoryScreen) */
 .content-scroll {
+  width: 1050px;
+  align-items: auto;
+  margin-left: auto;
+  margin-right: auto;
   flex-grow: 1;
-  padding: 0;
-  -unity-overflow-clip-box: padding-box;
-  -unity-content-container: true;
+}
+
+/* Обертка scroll-content */
+.scroll-content {
+  display: flex;
+  flex-direction: column;
+  padding: 30px;
+  flex-grow: 1;
+  height: 1960px;
+}
+
+/* ScrollView Scrollers */
+.unity-scroller--vertical {
+  width: 12px;
+}
+
+.unity-scroller--vertical .unity-dragger {
+  background-color: rgba(100, 150, 255, 0.3);
+  border-radius: 6px;
+}
+
+.unity-scroller--vertical .unity-dragger:hover {
+  background-color: rgba(100, 150, 255, 0.5);
 }
 
 .preview-image {
@@ -62,6 +87,8 @@
   flex-direction: row;
   margin-bottom: 8px;
   align-items: center;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .media-type-badge {
@@ -100,6 +127,10 @@
   /* Растягиваем на всю ширину, компенсируя padding родителя */
   left: -12px;
   right: -12px;
+  /* Для центрирования status-label */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .glb-render-target {
@@ -237,19 +268,21 @@
 /* Status Label */
 .status-label {
   position: absolute;
-  /* Простое центрирование через top и left/right */
-  top: 50%;
-  translate: -50% -50%;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
   background-color: rgba(0, 0, 0, 0.8);
-  font-size: 36px;
-  color: #e5e5e5;
   padding: 12px 20px;
   border-radius: 8px;
+  font-size: 36px;
+  color: #e5e5e5;
   -unity-text-align: middle-center;
   white-space: normal;
-  max-width: 90%;
-  word-wrap: break-word;
-  margin-top: -30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Metadata Styles */

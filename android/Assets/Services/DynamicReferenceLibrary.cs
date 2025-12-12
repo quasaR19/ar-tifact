@@ -7,6 +7,7 @@ using UnityEngine.XR.ARSubsystems;
 using UnityEngine.XR.ARFoundation;
 using Unity.Jobs;
 using ARArtifact.Storage;
+using ARArtifact.UI;
 
 namespace ARArtifact.Services
 {
@@ -244,9 +245,10 @@ namespace ARArtifact.Services
                 Texture2D texture = MarkerImageService.Instance?.LoadLocalImage(marker.localImagePath);
                 if (texture == null)
                 {
-                    Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось загрузить изображение для маркера {marker.id} по пути {marker.localImagePath}");
+                    Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Failed to load image for marker {marker.id} at path {marker.localImagePath}");
                     failCount++;
                     FailedMarkerIds.Add(marker.id);
+                    LogMarkerFailureToMainScreen(marker.id, AddReferenceImageJobStatus.ErrorInvalidImage, "Failed to load image file");
                     continue;
                 }
                 
@@ -270,9 +272,10 @@ namespace ARArtifact.Services
                     }
                     else
                     {
-                        Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось масштабировать изображение для маркера {marker.id}");
+                        Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Failed to scale image for marker {marker.id}");
                         failCount++;
                         FailedMarkerIds.Add(marker.id);
+                        LogMarkerFailureToMainScreen(marker.id, AddReferenceImageJobStatus.ErrorInvalidImage, "Failed to scale image");
                         continue;
                     }
                 }
@@ -284,9 +287,10 @@ namespace ARArtifact.Services
                     Texture2D readableTexture = CreateReadableTexture(texture);
                     if (readableTexture == null)
                     {
-                        Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Не удалось создать readable копию для маркера {marker.id}");
+                        Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Failed to create readable copy for marker {marker.id}");
                         failCount++;
                         FailedMarkerIds.Add(marker.id);
+                        LogMarkerFailureToMainScreen(marker.id, AddReferenceImageJobStatus.ErrorInvalidImage, "Failed to create readable texture");
                         continue;
                     }
                     // Уничтожаем старое изображение
@@ -344,7 +348,8 @@ namespace ARArtifact.Services
                 {
                     failCount++;
                     FailedMarkerIds.Add(marker.id);
-                    Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗ Ошибка при планировании добавления маркера {marker.id}: {e.Message}\nStackTrace: {e.StackTrace}");
+                    Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Error scheduling marker addition {marker.id}: {e.Message}\nStackTrace: {e.StackTrace}");
+                    LogMarkerFailureToMainScreen(marker.id, AddReferenceImageJobStatus.ErrorUnknown, e.Message);
                     continue;
                 }
                 
@@ -398,7 +403,10 @@ namespace ARArtifact.Services
                             failCount++;
                             FailedMarkerIds.Add(marker.id);
                             string errorDetails = GetErrorStatusDescription(jobState.Value.status);
-                            Debug.LogError($"[DynamicReferenceLibrary] [МАРКЕР {markerIndex}/{markers.Count}] ✗✗✗ Не удалось добавить маркер {marker.id}: {jobState.Value.status}\n{errorDetails}\nПараметры текстуры: размер={texture.width}x{texture.height}, формат={texture.format}, readable={texture.isReadable}\nПуть к файлу: {marker.localImagePath}");
+                            Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Failed to add marker {marker.id}: {jobState.Value.status}\n{errorDetails}\nTexture parameters: size={texture.width}x{texture.height}, format={texture.format}, readable={texture.isReadable}\nFile path: {marker.localImagePath}");
+                            
+                            // Log to MainScreen with artifact name
+                            LogMarkerFailureToMainScreen(marker.id, jobState.Value.status, errorDetails);
                             
                             // Уничтожаем текстуру в случае ошибки (job не будет её использовать)
                             if (texture != null)
@@ -411,7 +419,10 @@ namespace ARArtifact.Services
                     {
                         failCount++;
                         FailedMarkerIds.Add(marker.id);
-                        Debug.LogError($"[DynamicReferenceLibrary] Ошибка при завершении добавления маркера {marker.id}: {e.Message}");
+                        Debug.LogError($"[DynamicReferenceLibrary] Error completing marker addition {marker.id}: {e.Message}");
+                        
+                        // Log to MainScreen
+                        LogMarkerFailureToMainScreen(marker.id, AddReferenceImageJobStatus.ErrorUnknown, e.Message);
                     }
                 }
                 
@@ -527,15 +538,24 @@ namespace ARArtifact.Services
 
                 Graphics.Blit(source, renderTexture);
                 RenderTexture previous = RenderTexture.active;
-                RenderTexture.active = renderTexture;
-
-                // Создаем текстуру с правильным форматом для ARCore
+                
+                // Объявляем readableTexture вне try блока для доступа после finally
                 Texture2D readableTexture = new Texture2D(source.width, source.height, targetFormat, false);
-                readableTexture.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
-                readableTexture.Apply();
+                
+                try
+                {
+                    RenderTexture.active = renderTexture;
 
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(renderTexture);
+                    // Читаем пиксели из RenderTexture
+                    readableTexture.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+                    readableTexture.Apply();
+                }
+                finally
+                {
+                    // Восстанавливаем активный RenderTexture и освобождаем временный
+                    RenderTexture.active = previous;
+                    RenderTexture.ReleaseTemporary(renderTexture);
+                }
 
                 Debug.Log($"[DynamicReferenceLibrary] Readable копия создана: размер={readableTexture.width}x{readableTexture.height}, формат={readableTexture.format}, readable={readableTexture.isReadable}");
 
@@ -569,15 +589,24 @@ namespace ARArtifact.Services
                 
                 Graphics.Blit(source, renderTexture);
                 RenderTexture previous = RenderTexture.active;
-                RenderTexture.active = renderTexture;
                 
-                // Создаем новую текстуру в формате RGB24
+                // Объявляем rgbTexture вне try блока для доступа после finally
                 Texture2D rgbTexture = new Texture2D(source.width, source.height, TextureFormat.RGB24, false);
-                rgbTexture.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
-                rgbTexture.Apply();
                 
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(renderTexture);
+                try
+                {
+                    RenderTexture.active = renderTexture;
+                    
+                    // Читаем пиксели из RenderTexture
+                    rgbTexture.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
+                    rgbTexture.Apply();
+                }
+                finally
+                {
+                    // Восстанавливаем активный RenderTexture и освобождаем временный
+                    RenderTexture.active = previous;
+                    RenderTexture.ReleaseTemporary(renderTexture);
+                }
                 
                 return rgbTexture;
             }
@@ -697,76 +726,59 @@ namespace ARArtifact.Services
         }
 
         /// <summary>
-        /// Пытается получить targetId по имени/Guid-ам reference image/texture.
+        /// Tries to get targetId by reference image/texture name/Guid.
         /// </summary>
+        private readonly Dictionary<string, bool> loggedTargetIds = new Dictionary<string, bool>();
+        
         public bool TryGetTargetId(Guid referenceImageGuid, Guid textureGuid, string referenceName, out string targetId)
         {
-            // Debug.Log($"[DynamicReferenceLibrary] Входные параметры:");
-            Debug.Log($"[DynamicReferenceLibrary] TryGetTargetId: refName='{referenceName}', refGuid={referenceImageGuid}, texGuid={textureGuid}");
-            // Debug.Log($"[DynamicReferenceLibrary] Всего маппингов:");
-            // Debug.Log($"[DynamicReferenceLibrary]   referenceNameToTargetId: {referenceNameToTargetId.Count}");
-            // Debug.Log($"[DynamicReferenceLibrary]   referenceGuidToTargetId: {referenceGuidToTargetId.Count}");
-            // Debug.Log($"[DynamicReferenceLibrary]   textureGuidToTargetId: {textureGuidToTargetId.Count}");
-            
-            // Попытка 1: по имени
+            // Try 1: by name
             if (!string.IsNullOrEmpty(referenceName))
             {
-                // Debug.Log($"[DynamicReferenceLibrary] Попытка 1: поиск по referenceName='{referenceName}'...");
                 if (referenceNameToTargetId.TryGetValue(referenceName, out targetId))
                 {
-                    Debug.Log($"[DynamicReferenceLibrary] ✓ Найден по referenceName: '{targetId}'");
+                    // Log only on first successful lookup for this referenceName
+                    if (!loggedTargetIds.ContainsKey(referenceName))
+                    {
+                        Debug.Log($"[DynamicReferenceLibrary] Found by referenceName: '{targetId}'");
+                        loggedTargetIds[referenceName] = true;
+                    }
                     return true;
                 }
-                else
-                {
-                    Debug.Log($"[DynamicReferenceLibrary] ✗ Не найден по referenceName='{referenceName}'");
-                    Debug.Log($"[DynamicReferenceLibrary] Доступные имена в referenceNameToTargetId:");
-                    foreach (var kvp in referenceNameToTargetId)
-                    {
-                        Debug.Log($"[DynamicReferenceLibrary]   '{kvp.Key}' -> '{kvp.Value}'");
-                    }
-                }
             }
-            // else
-            // {
-            //     Debug.Log($"[DynamicReferenceLibrary] referenceName пуст, пропускаем поиск по имени");
-            // }
 
-            // Попытка 2: по referenceImageGuid
-            // Debug.Log($"[DynamicReferenceLibrary] Попытка 2: поиск по referenceImageGuid={referenceImageGuid}...");
+            // Try 2: by referenceImageGuid
             if (referenceGuidToTargetId.TryGetValue(referenceImageGuid, out targetId))
             {
-                Debug.Log($"[DynamicReferenceLibrary] ✓ Найден по referenceImageGuid: '{targetId}'");
+                string guidKey = referenceImageGuid.ToString();
+                if (!loggedTargetIds.ContainsKey(guidKey))
+                {
+                    Debug.Log($"[DynamicReferenceLibrary] Found by referenceImageGuid: '{targetId}'");
+                    loggedTargetIds[guidKey] = true;
+                }
                 return true;
             }
-            else
-            {
-                Debug.Log($"[DynamicReferenceLibrary] ✗ Не найден по referenceImageGuid={referenceImageGuid}");
-                Debug.Log($"[DynamicReferenceLibrary] Доступные GUID в referenceGuidToTargetId:");
-                foreach (var kvp in referenceGuidToTargetId)
-                {
-                    Debug.Log($"[DynamicReferenceLibrary]   {kvp.Key} -> '{kvp.Value}'");
-                }
-            }
 
-            // Попытка 3: по textureGuid
-            // Debug.Log($"[DynamicReferenceLibrary] Попытка 3: поиск по textureGuid={textureGuid}...");
+            // Try 3: by textureGuid
             if (textureGuidToTargetId.TryGetValue(textureGuid, out targetId))
             {
-                Debug.Log($"[DynamicReferenceLibrary] ✓ Найден по textureGuid: '{targetId}'");
+                string texGuidKey = textureGuid.ToString();
+                if (!loggedTargetIds.ContainsKey(texGuidKey))
+                {
+                    Debug.Log($"[DynamicReferenceLibrary] Found by textureGuid: '{targetId}'");
+                    loggedTargetIds[texGuidKey] = true;
+                }
                 return true;
             }
-            else
-            {
-                Debug.Log($"[DynamicReferenceLibrary] ✗ Не найден по textureGuid={textureGuid}");
-                Debug.Log($"[DynamicReferenceLibrary] Доступные texture GUID в textureGuidToTargetId:");
-                foreach (var kvp in textureGuidToTargetId)
-                {
-                    Debug.Log($"[DynamicReferenceLibrary]   {kvp.Key} -> '{kvp.Value}'");
-                }
-            }
 
-            Debug.LogError($"[DynamicReferenceLibrary] ✗ НЕ НАЙДЕН ни по одному ключу!");
+            // Log error only once per unique combination
+            string errorKey = $"{referenceName}_{referenceImageGuid}_{textureGuid}";
+            if (!loggedTargetIds.ContainsKey(errorKey))
+            {
+                Debug.LogError($"[DynamicReferenceLibrary] TargetId not found for refName='{referenceName}', refGuid={referenceImageGuid}, texGuid={textureGuid}");
+                loggedTargetIds[errorKey] = true;
+            }
+            
             targetId = null;
             return false;
         }
@@ -788,6 +800,70 @@ namespace ARArtifact.Services
             foreach (var kvp in textureGuidToTargetId)
             {
                 Debug.Log($"[DynamicReferenceLibrary]   textureGuid={kvp.Key} -> targetId='{kvp.Value}'");
+            }
+        }
+        
+        /// <summary>
+        /// Logs marker failure to MainScreen with artifact information
+        /// </summary>
+        private void LogMarkerFailureToMainScreen(string markerId, AddReferenceImageJobStatus status, string errorDetails)
+        {
+            // Try to get artifact name for this marker
+            var artifactService = ArtifactService.Instance;
+            if (artifactService != null)
+            {
+                artifactService.RequestArtifactForTarget(
+                    markerId,
+                    availability =>
+                    {
+                        string artifactName = availability.DisplayName;
+                        if (string.IsNullOrEmpty(artifactName) && availability.Record != null)
+                        {
+                            artifactName = availability.Record.name;
+                        }
+                        
+                        string message;
+                        if (!string.IsNullOrEmpty(artifactName))
+                        {
+                            message = $"Failed to add marker for artifact '{artifactName}': {GetShortErrorDescription(status)}";
+                        }
+                        else
+                        {
+                            message = $"Failed to add marker {markerId}: {GetShortErrorDescription(status)}";
+                        }
+                        
+                        MainScreenController.LogToMainScreen(message, markerId);
+                    },
+                    error =>
+                    {
+                        // If artifact not found, just log with marker ID
+                        string message = $"Failed to add marker {markerId}: {GetShortErrorDescription(status)}";
+                        MainScreenController.LogToMainScreen(message, markerId);
+                    });
+            }
+            else
+            {
+                // If ArtifactService not available, log with marker ID only
+                string message = $"Failed to add marker {markerId}: {GetShortErrorDescription(status)}";
+                MainScreenController.LogToMainScreen(message, markerId);
+            }
+        }
+        
+        /// <summary>
+        /// Returns short error description for MainScreen log
+        /// </summary>
+        private string GetShortErrorDescription(AddReferenceImageJobStatus status)
+        {
+            switch (status)
+            {
+                case AddReferenceImageJobStatus.ErrorInvalidImage:
+                    return "Invalid image (low contrast or too simple)";
+                case AddReferenceImageJobStatus.ErrorDuplicateImage:
+                    return "Duplicate image";
+                case AddReferenceImageJobStatus.ErrorUnknown:
+                    return "Unknown error";
+                default:
+                    return status.ToString();
             }
         }
     }

@@ -75,12 +75,32 @@ namespace ARArtifact.UI
                 contentScroll.mode = ScrollViewMode.Vertical;
                 // Включаем touch scrolling
                 contentScroll.touchScrollBehavior = ScrollView.TouchScrollBehavior.Clamped;
-                // Включаем видимость вертикального скроллера
-                contentScroll.verticalScrollerVisibility = ScrollerVisibility.Auto;
+                // Временно включаем видимость скроллбара всегда для отладки
+                contentScroll.verticalScrollerVisibility = ScrollerVisibility.AlwaysVisible;
                 contentScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-                // Альтернативный способ (для старых версий Unity)
-                contentScroll.showVertical = true;
-                contentScroll.showHorizontal = false;
+                
+                // Убеждаемся, что content container имеет правильные настройки
+                var contentContainer = contentScroll.contentContainer;
+                if (contentContainer != null)
+                {
+                    // Устанавливаем flex-direction: column для вертикального расположения
+                    contentContainer.style.flexDirection = FlexDirection.Column;
+                    // Убеждаемся, что контейнер не растягивается
+                    contentContainer.style.flexGrow = 0;
+                    contentContainer.style.flexShrink = 0;
+                }
+                
+                // Отладка: проверяем размеры после первого кадра
+                contentScroll.schedule.Execute(() => {
+                    var viewport = contentScroll.Q<VisualElement>(null, "unity-scroll-view__content-viewport");
+                    var content = contentScroll.contentContainer;
+                    if (viewport != null && content != null)
+                    {
+                        Debug.Log($"[DetailsScreen] ScrollView размеры - viewport: {viewport.layout.height}, content: {content.layout.height}, ScrollView: {contentScroll.layout.height}");
+                        Debug.Log($"[DetailsScreen] ScrollView mode: {contentScroll.mode}, verticalScrollerVisibility: {contentScroll.verticalScrollerVisibility}");
+                        Debug.Log($"[DetailsScreen] Content container flexDirection: {content.style.flexDirection}, flexGrow: {content.style.flexGrow.value}");
+                    }
+                }).ExecuteLater(100);
             }
             
             previewImage = _root.Q<VisualElement>("preview-image");
@@ -250,7 +270,7 @@ namespace ARArtifact.UI
             // Показываем метаданные (если есть и это не YouTube)
             if (mediaType != "youtube" && !string.IsNullOrEmpty(media.metadataJson))
             {
-                var metadataContainer = FormatMetadata(media.metadataJson);
+                var metadataContainer = FormatMetadata(media.metadataJson, mediaType);
                 item.Add(metadataContainer);
             }
 
@@ -268,11 +288,63 @@ namespace ARArtifact.UI
             };
         }
 
-        private VisualElement FormatMetadata(string json)
+        private VisualElement FormatMetadata(string json, string mediaType = null)
         {
             var container = new VisualElement();
             string trimmedJson = json.Trim();
             
+            // Специальная обработка для видео метаданных
+            if (mediaType == "video" && trimmedJson.StartsWith("{") && trimmedJson.IndexOf("{", 1) == -1)
+            {
+                try
+                {
+                    // Пытаемся распарсить как VideoMetadata
+                    var videoMetadata = JsonUtility.FromJson<VideoMetadata>(json);
+                    if (videoMetadata != null)
+                    {
+                        // Выводим размеры и длительность в читаемом формате
+                        if (videoMetadata.width > 0 && videoMetadata.height > 0)
+                        {
+                            var sizeLabel = new Label($"Размеры: {videoMetadata.width} × {videoMetadata.height} пикселей");
+                            sizeLabel.AddToClassList("media-metadata");
+                            container.Add(sizeLabel);
+                            
+                            Debug.Log($"[DetailsScreen] Video metadata - width: {videoMetadata.width}, height: {videoMetadata.height}, duration: {videoMetadata.duration}s");
+                        }
+                        
+                        if (videoMetadata.duration > 0)
+                        {
+                            string durationText = FormatDuration(videoMetadata.duration);
+                            var durationLabel = new Label($"Длительность: {durationText}");
+                            durationLabel.AddToClassList("media-metadata");
+                            container.Add(durationLabel);
+                        }
+                        
+                        if (videoMetadata.size > 0)
+                        {
+                            string sizeText = FormatFileSize(videoMetadata.size);
+                            var fileSizeLabel = new Label($"Размер файла: {sizeText}");
+                            fileSizeLabel.AddToClassList("media-metadata");
+                            container.Add(fileSizeLabel);
+                        }
+                        
+                        if (!string.IsNullOrEmpty(videoMetadata.filename))
+                        {
+                            var filenameLabel = new Label($"Файл: {videoMetadata.filename}");
+                            filenameLabel.AddToClassList("media-metadata");
+                            container.Add(filenameLabel);
+                        }
+                        
+                        return container;
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[DetailsScreen] Ошибка парсинга видео метаданных: {e.Message}, JSON: {json}");
+                }
+            }
+            
+            // Общая обработка для других типов метаданных
             if (trimmedJson.StartsWith("{") && trimmedJson.IndexOf("{", 1) == -1) 
             {
                 try 
@@ -325,6 +397,47 @@ namespace ARArtifact.UI
             }
 
             return container;
+        }
+        
+        private string FormatDuration(float seconds)
+        {
+            if (seconds < 60)
+            {
+                return $"{seconds:F1} сек";
+            }
+            else if (seconds < 3600)
+            {
+                int minutes = Mathf.FloorToInt(seconds / 60);
+                int secs = Mathf.FloorToInt(seconds % 60);
+                return $"{minutes} мин {secs} сек";
+            }
+            else
+            {
+                int hours = Mathf.FloorToInt(seconds / 3600);
+                int minutes = Mathf.FloorToInt((seconds % 3600) / 60);
+                int secs = Mathf.FloorToInt(seconds % 60);
+                return $"{hours} ч {minutes} мин {secs} сек";
+            }
+        }
+        
+        private string FormatFileSize(long bytes)
+        {
+            if (bytes < 1024)
+            {
+                return $"{bytes} Б";
+            }
+            else if (bytes < 1024 * 1024)
+            {
+                return $"{bytes / 1024.0:F1} КБ";
+            }
+            else if (bytes < 1024 * 1024 * 1024)
+            {
+                return $"{bytes / (1024.0 * 1024.0):F1} МБ";
+            }
+            else
+            {
+                return $"{bytes / (1024.0 * 1024.0 * 1024.0):F1} ГБ";
+            }
         }
 
         private string TranslateKey(string key)

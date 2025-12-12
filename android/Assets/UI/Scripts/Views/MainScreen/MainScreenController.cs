@@ -152,9 +152,6 @@ namespace ARArtifact.UI
                 // Включаем видимость вертикального скроллера
                 targetPreviewList.verticalScrollerVisibility = ScrollerVisibility.Auto;
                 targetPreviewList.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-                // Альтернативный способ (для старых версий Unity)
-                targetPreviewList.showVertical = true;
-                targetPreviewList.showHorizontal = false;
                 
                 // Отладка: проверяем размеры после первого кадра
                 targetPreviewList.schedule.Execute(() => {
@@ -172,6 +169,7 @@ namespace ARArtifact.UI
             downloadProgressContainer = _root.Q<VisualElement>("download-progress-container");
             if (downloadProgressContainer != null)
             {
+                Debug.Log($"[MainScreen] download-progress-container найден, создаем контроллер");
                 // Удаляем тестовый контент, если есть
                 var testDownload = downloadProgressContainer.Q<VisualElement>("test-download");
                 if (testDownload != null)
@@ -180,11 +178,19 @@ namespace ARArtifact.UI
                 }
                 
                 downloadProgressController = new DownloadProgressController(downloadProgressContainer, this);
+                Debug.Log($"[MainScreen] DownloadProgressController создан: {downloadProgressController != null}");
+            }
+            else
+            {
+                Debug.LogError($"[MainScreen] download-progress-container НЕ НАЙДЕН в UXML! Проверьте структуру UXML.");
             }
             
             // Инициализируем лог-окошко пустыми значениями
             if (targetLogNew != null) targetLogNew.text = "";
             if (targetLogOld != null) targetLogOld.text = "";
+            
+            // Подключаем события ModelLoaderService для отслеживания загрузок
+            ConnectModelLoaderEvents();
             
             // Настраиваем обработчики событий
             if (burgerMenuButton != null)
@@ -247,14 +253,35 @@ namespace ARArtifact.UI
             OnDisconnect();
         }
         
+        private bool areModelLoaderEventsConnected = false;
+        
         private void ConnectModelLoaderEvents()
         {
+            // Если события уже подключены, не подключаем повторно
+            if (areModelLoaderEventsConnected)
+            {
+                return;
+            }
+            
+            // Подключаем события
             var modelLoader = ModelLoaderService.Instance;
             if (modelLoader != null)
             {
+                // Сначала отписываемся на случай, если были подключены ранее
+                modelLoader.OnLoadStarted -= OnModelLoadStarted;
+                modelLoader.OnLoadCompleted -= OnModelLoadCompleted;
+                modelLoader.OnLoadFailed -= OnModelLoadFailed;
+                
+                // Подключаем события
                 modelLoader.OnLoadStarted += OnModelLoadStarted;
                 modelLoader.OnLoadCompleted += OnModelLoadCompleted;
                 modelLoader.OnLoadFailed += OnModelLoadFailed;
+                areModelLoaderEventsConnected = true;
+                Debug.Log("[MainScreen] События ModelLoaderService подключены");
+            }
+            else
+            {
+                Debug.LogWarning("[MainScreen] ModelLoaderService.Instance == null при подключении событий. События будут подключены при следующей попытке.");
             }
         }
         
@@ -268,16 +295,30 @@ namespace ARArtifact.UI
                 modelLoader.OnLoadFailed -= OnModelLoadFailed;
             }
             
+            areModelLoaderEventsConnected = false;
             downloadProgressController?.ClearAll();
         }
         
         private void OnModelLoadStarted(string artifactId)
         {
+            Debug.Log($"[MainScreen] OnModelLoadStarted вызван: artifactId={artifactId}");
+            
+            // Убеждаемся, что события подключены (на случай, если ModelLoaderService был создан позже)
+            if (!areModelLoaderEventsConnected)
+            {
+                ConnectModelLoaderEvents();
+            }
+            
             if (downloadProgressController != null)
             {
                 // Получаем имя артефакта, если оно известно
                 string displayName = artifactDisplayNames.TryGetValue(artifactId, out var name) ? name : null;
+                Debug.Log($"[MainScreen] Начинаем отслеживание загрузки: artifactId={artifactId}, displayName={displayName ?? "null"}");
                 downloadProgressController.StartTracking(artifactId, displayName);
+            }
+            else
+            {
+                Debug.LogWarning($"[MainScreen] downloadProgressController == null, не можем начать отслеживание для {artifactId}");
             }
         }
         
@@ -302,32 +343,52 @@ namespace ARArtifact.UI
         /// </summary>
         public void SetArtifactDisplayName(string artifactId, string displayName)
         {
-            if (!string.IsNullOrEmpty(artifactId) && !string.IsNullOrEmpty(displayName))
+            if (string.IsNullOrEmpty(artifactId) || string.IsNullOrEmpty(displayName))
             {
-                artifactDisplayNames[artifactId] = displayName;
-                
-                // Проверяем статус модели перед началом отслеживания
-                if (downloadProgressController != null)
+                Debug.LogWarning($"[MainScreen] SetArtifactDisplayName вызван с пустыми параметрами: artifactId={artifactId}, displayName={displayName}");
+                return;
+            }
+            
+            Debug.Log($"[MainScreen] SetArtifactDisplayName: artifactId={artifactId}, displayName={displayName}");
+            artifactDisplayNames[artifactId] = displayName;
+            
+            // Убеждаемся, что события подключены
+            ConnectModelLoaderEvents();
+            
+            // Проверяем статус модели перед началом отслеживания
+            if (downloadProgressController != null)
+            {
+                var modelLoader = ModelLoaderService.Instance;
+                if (modelLoader != null)
                 {
-                    var modelLoader = ModelLoaderService.Instance;
-                    if (modelLoader != null)
+                    // Если модель уже загружена из кэша, не показываем прогресс
+                    if (modelLoader.TryGetLoadedModel(artifactId, out _))
                     {
-                        // Если модель уже загружена из кэша, не показываем прогресс
-                        if (modelLoader.TryGetLoadedModel(artifactId, out _))
-                        {
-                            // Модель уже в кэше, не начинаем отслеживание
-                            return;
-                        }
-                        
-                        // Если модель загружается, начинаем отслеживание
-                        if (modelLoader.IsLoading(artifactId))
-                        {
-                            downloadProgressController.StartTracking(artifactId, displayName);
-                        }
-                        // Если модель не загружена и не загружается, не начинаем отслеживание
-                        // Оно начнется автоматически при вызове OnLoadStarted
+                        Debug.Log($"[MainScreen] Модель {artifactId} уже загружена из кэша, не начинаем отслеживание");
+                        return;
                     }
+                    
+                    // Если модель загружается, начинаем отслеживание немедленно
+                    if (modelLoader.IsLoading(artifactId))
+                    {
+                        Debug.Log($"[MainScreen] Модель {artifactId} уже загружается, начинаем отслеживание немедленно");
+                        downloadProgressController.StartTracking(artifactId, displayName);
+                    }
+                    else
+                    {
+                        Debug.Log($"[MainScreen] Модель {artifactId} еще не загружается, отслеживание начнется при OnLoadStarted");
+                    }
+                    // Если модель не загружена и не загружается, не начинаем отслеживание
+                    // Оно начнется автоматически при вызове OnLoadStarted
                 }
+                else
+                {
+                    Debug.LogWarning($"[MainScreen] ModelLoaderService.Instance == null при SetArtifactDisplayName для {artifactId}");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[MainScreen] downloadProgressController == null при SetArtifactDisplayName для {artifactId}");
             }
         }
         
@@ -707,12 +768,26 @@ namespace ARArtifact.UI
                 lastLogTime = currentTime;
             }
             
+            // Обрезаем длинные сообщения (примерно 80 символов для нового, 100 для старого)
+            const int maxNewLength = 80;
+            const int maxOldLength = 100;
+            
             if (!string.IsNullOrEmpty(targetLogNew.text))
             {
-                targetLogOld.text = targetLogNew.text;
+                string oldText = targetLogNew.text;
+                if (oldText.Length > maxOldLength)
+                {
+                    oldText = oldText.Substring(0, maxOldLength);
+                }
+                targetLogOld.text = oldText;
             }
             
-            targetLogNew.text = message;
+            string newText = message;
+            if (newText.Length > maxNewLength)
+            {
+                newText = newText.Substring(0, maxNewLength);
+            }
+            targetLogNew.text = newText;
         }
         
         public void ClearTargetLog()
@@ -721,6 +796,25 @@ namespace ARArtifact.UI
             if (targetLogOld != null) targetLogOld.text = "";
             lastLoggedTargetId = null;
             lastLogTime = 0f;
+        }
+        
+        /// <summary>
+        /// Статический метод для логирования сообщений в MainScreen из других сервисов
+        /// </summary>
+        public static void LogToMainScreen(string message, string targetId = null)
+        {
+            var manager = UnityEngine.Object.FindFirstObjectByType<MainScreenManager>();
+            if (manager != null)
+            {
+                var controller = manager.GetController();
+                if (controller != null)
+                {
+                    controller.LogTargetRecognition(message, targetId);
+                    return;
+                }
+            }
+            // Если MainScreen недоступен, логируем в консоль
+            Debug.LogWarning($"[MainScreen] Не удалось залогировать в UI: {message}");
         }
     }
 }

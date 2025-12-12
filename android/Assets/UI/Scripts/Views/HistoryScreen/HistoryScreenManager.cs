@@ -75,6 +75,7 @@ namespace ARArtifact.UI
                 historyScreenController.OnClose -= HandleCloseRequested;
                 historyScreenController.OnClearHistory -= HandleClearHistory;
                 historyScreenController.OnItemClicked -= HandleItemClicked;
+                historyScreenController.OnItemDeleted -= HandleItemDeleted;
             }
 
             if (ArtifactService.Instance != null)
@@ -136,6 +137,7 @@ namespace ARArtifact.UI
             historyScreenController.OnClose += HandleCloseRequested;
             historyScreenController.OnClearHistory += HandleClearHistory;
             historyScreenController.OnItemClicked += HandleItemClicked;
+            historyScreenController.OnItemDeleted += HandleItemDeleted;
             
             if (ArtifactService.Instance != null)
             {
@@ -191,6 +193,14 @@ namespace ARArtifact.UI
             if (detailsScreenManager != null)
             {
                 detailsScreenManager.Show(targetId);
+            }
+        }
+
+        private void HandleItemDeleted(string targetId)
+        {
+            if (ArtifactService.Instance != null)
+            {
+                ArtifactService.Instance.DeleteHistoryItem(targetId);
             }
         }
 
@@ -261,6 +271,7 @@ namespace ARArtifact.UI
             historyScreenController.OnClose += HandleCloseRequested;
             historyScreenController.OnClearHistory += HandleClearHistory;
             historyScreenController.OnItemClicked += HandleItemClicked;
+            historyScreenController.OnItemDeleted += HandleItemDeleted;
             
             // Восстанавливаем видимость и данные
             if (wasVisible)

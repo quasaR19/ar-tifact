@@ -60,24 +60,12 @@ namespace ARArtifact.UI.Common
                 _headerRightContainer = _header.Q<VisualElement>(className: "header__right");
                 
                 // Find close button by name or class, standardizing on name "close-button"
+                // Note: Close button is optional - not all screens need it (e.g., MainScreen uses burger-menu-button)
                 _closeButton = _header.Q<Button>("close-button");
                 if (_closeButton != null)
                 {
                     _closeButton.clicked += OnCloseClicked;
                     Debug.Log($"[BaseScreenController] Кнопка закрытия найдена и подписана для {GetType().Name}");
-                }
-                else
-                {
-                    Debug.LogWarning($"[BaseScreenController] Кнопка закрытия не найдена для {GetType().Name}. Проверка элементов в header:");
-                    if (_header != null)
-                    {
-                        var allButtons = _header.Query<Button>().ToList();
-                        Debug.LogWarning($"[BaseScreenController] Найдено кнопок в header: {allButtons.Count}");
-                        foreach (var btn in allButtons)
-                        {
-                            Debug.LogWarning($"[BaseScreenController] Кнопка: name={btn.name}, classList={string.Join(", ", btn.GetClasses())}");
-                        }
-                    }
                 }
             }
             else

@@ -44,54 +44,19 @@
 
 /* List Styles */
 .markers-list {
+  width: 100%;
+  align-items: auto;
   flex-grow: 1;
-  flex-shrink: 1;
   margin: 10px 0px 0px 0px;
 }
 
-/* Viewport должен занимать все доступное пространство */
-.markers-list > .unity-scroll-view__content-viewport {
-  flex-grow: 1;
-  flex-shrink: 1;
-}
-
-/* Content container не должен растягиваться, только по размеру контента */
-.markers-list > .unity-scroll-view__content-viewport > .unity-scroll-view__content-container {
-  flex-grow: 0;
-  flex-shrink: 0;
-  flex-basis: auto;
-  min-height: 0;
-  height: auto;
-}
-
-/* Скрываем горизонтальный скроллер */
-.markers-list .unity-scroller--horizontal {
-  display: none;
-}
-
-/* Убеждаемся, что вертикальный скроллер виден */
-.markers-list .unity-scroller--vertical {
-  display: flex;
-  width: 12px;
-}
-
-.markers-list .unity-scroller--vertical .unity-dragger {
-  background-color: rgba(100, 150, 255, 0.3);
-  border-radius: 6px;
-}
-
-.markers-list .unity-scroller--vertical .unity-dragger:hover {
-  background-color: rgba(100, 150, 255, 0.5);
-}
-
 .markers-container {
-  flex-grow: 0;
-  flex-shrink: 0;
-  flex-basis: auto;
-  min-height: 0;
+  display: flex;
   flex-direction: row;
   flex-wrap: wrap;
-  padding-bottom: 20px;
+  padding: 30px;
+  flex-grow: 1;
+  height: 1960px;
   justify-content: center;
 }
 
@@ -118,4 +83,18 @@
 .empty-state Label {
   color: rgba(150, 150, 150, 0.7);
   font-size: 18px;
+}
+
+/* ScrollView Scrollers */
+.unity-scroller--vertical {
+  width: 12px;
+}
+
+.unity-scroller--vertical .unity-dragger {
+  background-color: rgba(100, 150, 255, 0.3);
+  border-radius: 6px;
+}
+
+.unity-scroller--vertical .unity-dragger:hover {
+  background-color: rgba(100, 150, 255, 0.5);
 }

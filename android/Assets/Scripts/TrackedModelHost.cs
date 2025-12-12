@@ -21,7 +21,7 @@ public class TrackedModelHost : MonoBehaviour
     [SerializeField] private float modelSpinSpeed = 10f;
     
     [Header("Persistence")]
-    [SerializeField] private float fadeOutDelaySeconds = 3f;
+    [SerializeField] private float fadeOutDelaySeconds = 1f;
     [SerializeField] private float fadeOutDurationSeconds = 0f; // Моментальное скрытие после задержки
 
     [Header("Debug")]
@@ -34,6 +34,10 @@ public class TrackedModelHost : MonoBehaviour
     private GameObject modelWrapper; // Wrapper для центрирования модели по геометрическому центру
     private Transform modelInsideWrapper; // Ссылка на модель внутри wrapper'а (для обновления позиции)
     private float targetSize = 0.1f; // Размер таргета по умолчанию (в метрах)
+    
+    // Компоненты для обработки кликов
+    private BoxCollider modelCollider;
+    private UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable modelInteractable;
     
     // Базовые ротации для моделей (выравнивание относительно мира)
     private Quaternion basePlaceholderRotation = Quaternion.identity;
@@ -79,6 +83,7 @@ public class TrackedModelHost : MonoBehaviour
     public string CurrentArtifactId { get; private set; }
     public bool HasLoadedModel => loadedModel != null;
     public bool IsPinned => isPinned;
+    private bool isAttachingModel = false; // Флаг, что модель прикрепляется
 
     private void Awake()
     {
@@ -104,19 +109,31 @@ public class TrackedModelHost : MonoBehaviour
 
     private void Update()
     {
-        // Проверяем, что хост все еще привязан к родителю (ARTrackedImage)
-        // Если родитель null, модель не будет следовать за таргетом
         if (transform.parent == null && loadedModel != null)
         {
             Debug.LogError($"[TrackedModelHost] КРИТИЧЕСКАЯ ОШИБКА: Хост {name} потерял родителя (ARTrackedImage)! Модель не будет следовать за таргетом.");
         }
         
-        if (loadedModel != null)
+#if UNITY_EDITOR
+        DrawDebugAxes();
+#endif
+        
+        if (loadedModel != null && !isAttachingModel)
         {
-            // Проверяем, что модель все еще привязана к хосту
-            if (!loadedModel.transform.IsChildOf(transform))
+            Transform attachmentRoot = GetAttachmentRoot();
+            if (attachmentRoot != null && !loadedModel.transform.IsChildOf(attachmentRoot))
             {
-                Debug.LogError($"[TrackedModelHost] КРИТИЧЕСКАЯ ОШИБКА: Модель {loadedModel.name} не является дочерним объектом хоста {name}!");
+                Debug.LogWarning($"[TrackedModelHost] Модель {loadedModel.name} потеряла связь с хостом {name}! Восстанавливаем привязку.");
+                
+                Vector3 worldPosition = loadedModel.transform.position;
+                Quaternion worldRotation = loadedModel.transform.rotation;
+                Vector3 localScale = loadedModel.transform.localScale;
+                
+                loadedModel.transform.SetParent(attachmentRoot, false);
+                
+                loadedModel.transform.position = worldPosition;
+                loadedModel.transform.rotation = worldRotation;
+                loadedModel.transform.localScale = localScale;
             }
             
             UpdateModelTransform(loadedModel.transform, ref baseLoadedModelRotation, ref loadedModelRotationAngle, modelSpinSpeed, spinModel, false);
@@ -124,6 +141,39 @@ public class TrackedModelHost : MonoBehaviour
         else if (placeholderModel != null)
         {
             UpdateModelTransform(placeholderModel.transform, ref basePlaceholderRotation, ref placeholderRotationAngle, placeholderSpinSpeed, spinModel, true);
+        }
+    }
+    
+    private void DrawDebugAxes()
+    {
+        if (!drawGizmos) return;
+        
+        const float axisLength = 0.2f;
+        
+        Vector3 targetPos = transform.position;
+        Debug.DrawLine(targetPos - Vector3.up * axisLength, targetPos + Vector3.up * axisLength, Color.red, 0f, false);
+        
+        if (transform.parent != null)
+        {
+            Vector3 arImagePos = transform.parent.position;
+            Debug.DrawLine(arImagePos - Vector3.up * axisLength, arImagePos + Vector3.up * axisLength, Color.yellow, 0f, false);
+        }
+        
+        if (modelWrapper != null)
+        {
+            Vector3 wrapperPos = modelWrapper.transform.position;
+            Debug.DrawLine(wrapperPos - Vector3.up * axisLength, wrapperPos + Vector3.up * axisLength, Color.blue, 0f, false);
+        }
+        
+        if (modelInsideWrapper != null)
+        {
+            Vector3 modelPos = modelInsideWrapper.position;
+            Debug.DrawLine(modelPos - Vector3.up * axisLength, modelPos + Vector3.up * axisLength, Color.green, 0f, false);
+        }
+        else if (loadedModel != null && modelWrapper == null)
+        {
+            Vector3 modelPos = loadedModel.transform.position;
+            Debug.DrawLine(modelPos - Vector3.up * axisLength, modelPos + Vector3.up * axisLength, Color.green, 0f, false);
         }
     }
 
@@ -181,6 +231,18 @@ public class TrackedModelHost : MonoBehaviour
             modelWrapper = null;
         }
         
+        // Скрываем TrackedVideoHost, если он есть (чтобы ARVideo не отображался для таргетов с моделями)
+        var videoHost = GetComponent<TrackedVideoHost>();
+        if (videoHost != null && videoHost.HasLoadedVideo)
+        {
+            // Удаляем видео из хоста
+            var videoSceneManager = ARArtifact.Services.VideoSceneManager.Instance;
+            if (videoSceneManager != null)
+            {
+                videoSceneManager.RemoveVideoFromHost(videoHost.CurrentArtifactId, videoHost);
+            }
+        }
+        
         // Инвалидируем кеш bounds
         boundsCacheValid = false;
         cachedModelBounds = null;
@@ -192,11 +254,12 @@ public class TrackedModelHost : MonoBehaviour
             try
             {
                 var metadata = JsonUtility.FromJson<ModelMetadata>(metadataJson);
-                shouldCenterModel = metadata.center_model;
+                // Проверяем все возможные варианты названия поля
+                shouldCenterModel = metadata.center_model || metadata.center || metadata.centerModel;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[TrackedModelHost] Ошибка парсинга metadata: {e.Message}");
+                Debug.LogWarning($"[TrackedModelHost] Ошибка парсинга metadata: {e.Message}, JSON: {metadataJson}");
             }
         }
 
@@ -207,6 +270,12 @@ public class TrackedModelHost : MonoBehaviour
         }
         
         // Запускаем асинхронное прикрепление модели для оптимизации производительности
+        // Проверяем, что объект активен перед запуском корутины
+        if (!gameObject.activeSelf)
+        {
+            gameObject.SetActive(true);
+        }
+        
         attachModelCoroutine = StartCoroutine(AttachModelAsync(modelInstance, artifactId, metadataJson, shouldCenterModel));
     }
     
@@ -215,12 +284,15 @@ public class TrackedModelHost : MonoBehaviour
     /// </summary>
     private IEnumerator AttachModelAsync(GameObject modelInstance, string artifactId, string metadataJson, bool shouldCenterModel)
     {
+        isAttachingModel = true; // Устанавливаем флаг, что модель прикрепляется
+        
         // Шаг 1: Сначала скрываем модель, чтобы не было видно процесса загрузки
         modelInstance.SetActive(false);
         
         // Шаг 2: Создаем wrapper если нужно (легкая операция)
         if (shouldCenterModel)
         {
+            Debug.Log($"[TrackedModelHost] Создание wrapper для центрирования модели {artifactId}");
             modelWrapper = new GameObject($"ModelWrapper_{artifactId}");
             modelWrapper.transform.localPosition = Vector3.zero;
             modelWrapper.transform.localRotation = Quaternion.identity;
@@ -241,6 +313,14 @@ public class TrackedModelHost : MonoBehaviour
         Bounds modelBounds = default;
         Vector3 geometricCenter = Vector3.zero;
         
+        // Получаем attachmentRoot один раз для использования в обоих блоках
+        Transform attachmentRoot = GetAttachmentRoot();
+        if (attachmentRoot == null)
+        {
+            Debug.LogError($"[TrackedModelHost] GetAttachmentRoot() вернул null при прикреплении модели для {artifactId}! Прерываем операцию.");
+            yield break;
+        }
+        
         if (shouldCenterModel)
         {
             Vector3 originalScale = modelInstance.transform.localScale;
@@ -256,12 +336,28 @@ public class TrackedModelHost : MonoBehaviour
             modelInstance.transform.localScale = originalScale;
             modelInstance.transform.localPosition = -geometricCenter;
             
-            modelWrapper.transform.SetParent(GetAttachmentRoot(), false);
+            modelInstance.SetActive(true);
+            
+            modelWrapper.transform.SetParent(attachmentRoot, false);
             loadedModel = modelWrapper;
+            
+            if (!loadedModel.transform.IsChildOf(attachmentRoot))
+            {
+                Debug.LogError($"[TrackedModelHost] КРИТИЧЕСКАЯ ОШИБКА: Wrapper {modelWrapper.name} не привязан к {attachmentRoot.name} после SetParent!");
+                loadedModel.transform.SetParent(attachmentRoot, false);
+            }
         }
         else
         {
-            loadedModel.transform.SetParent(GetAttachmentRoot(), false);
+            loadedModel.transform.SetParent(attachmentRoot, false);
+            
+            // Проверяем, что привязка прошла успешно
+            if (!loadedModel.transform.IsChildOf(attachmentRoot))
+            {
+                Debug.LogError($"[TrackedModelHost] КРИТИЧЕСКАЯ ОШИБКА: Модель {loadedModel.name} не привязана к {attachmentRoot.name} после SetParent!");
+                // Пытаемся привязать еще раз
+                loadedModel.transform.SetParent(attachmentRoot, false);
+            }
         }
         
         // Ждем кадр перед следующей операцией
@@ -287,30 +383,24 @@ public class TrackedModelHost : MonoBehaviour
         CurrentArtifactId = artifactId;
         
         // Шаг 7: Проверка иерархии и активация
-        if (!loadedModel.transform.IsChildOf(GetAttachmentRoot()))
+        // attachmentRoot уже объявлен выше, используем его
+        if (attachmentRoot != null && !loadedModel.transform.IsChildOf(attachmentRoot))
         {
             Debug.LogError($"[TrackedModelHost] КРИТИЧЕСКАЯ ОШИБКА: Модель НЕ прикреплена к хосту после AttachLoadedModel! Принудительно прикрепляем...");
-            loadedModel.transform.SetParent(GetAttachmentRoot(), false);
+            loadedModel.transform.SetParent(attachmentRoot, false);
         }
         
-        // Проверяем полную иерархию для отладки
-        Debug.Log($"[TrackedModelHost] Иерархия после прикрепления модели {artifactId}:");
-        Debug.Log($"  - Хост: {name}, parent: {(transform.parent != null ? transform.parent.name : "NULL")}");
-        Debug.Log($"  - Модель: {loadedModel.name}, parent: {(loadedModel.transform.parent != null ? loadedModel.transform.parent.name : "NULL")}");
-        if (modelInsideWrapper != null)
-        {
-            Debug.Log($"  - ModelInsideWrapper: {modelInsideWrapper.name}, parent: {(modelInsideWrapper.parent != null ? modelInsideWrapper.parent.name : "NULL")}");
-        }
+        isAttachingModel = false;
         
-        // Активируем модель постепенно - сначала включаем, потом применяем альфу
         loadedModel.SetActive(true);
         yield return null;
         
-        // Постепенно активируем рендереры для плавной загрузки
         yield return StartCoroutine(ActivateRenderersGradually(loadedModel.transform));
         
-        // Применяем альфу (может вызвать кеширование материалов, но это будет в следующем кадре)
         ApplyAlphaToModel(1f);
+        
+        yield return null;
+        SetupColliderAndXRInteraction();
         
         attachModelCoroutine = null;
     }
@@ -389,6 +479,8 @@ public class TrackedModelHost : MonoBehaviour
     private class ModelMetadata
     {
         public bool center_model;
+        public bool center; // Альтернативное название для совместимости
+        public bool centerModel; // Альтернативное название для совместимости
     }
 
     private void CleanupSiblings(Transform keepObject)
@@ -449,22 +541,52 @@ public class TrackedModelHost : MonoBehaviour
             AlignModel(placeholderModel.transform, true);
         }
     }
+    
+    /// <summary>
+    /// Hides the placeholder model (e.g., when video is loaded on the same host)
+    /// </summary>
+    public void HidePlaceholder()
+    {
+        if (placeholderModel != null)
+        {
+            placeholderModel.SetActive(false);
+        }
+    }
+    
+    /// <summary>
+    /// Shows the placeholder model (e.g., when video is removed)
+    /// </summary>
+    public void ShowPlaceholder()
+    {
+        if (placeholderModel != null && !HasLoadedModel)
+        {
+            placeholderModel.SetActive(true);
+            AlignModel(placeholderModel.transform, true);
+        }
+    }
 
     public void SetTrackingActive(bool isActive)
     {
         bool oldState = isTrackingActive;
+        
+        // Если состояние не изменилось, не делаем ничего (предотвращает ненужные вызовы)
+        if (oldState == isActive)
+        {
+            return;
+        }
+        
         isTrackingActive = isActive;
         
-        // Логируем только при изменении состояния трекинга
+        // Log only when tracking state changes
         if (oldState != isActive)
         {
             if (isActive)
             {
-                Debug.Log($"[TrackedModelHost] Трекинг захвачен: host={name}, artifactId={CurrentArtifactId ?? "null"}, isPinned={isPinned}");
+                Debug.Log($"[TrackedModelHost] Tracking acquired: host={name}, artifactId={CurrentArtifactId ?? "null"}, isPinned={isPinned}");
             }
             else
             {
-                Debug.Log($"[TrackedModelHost] Трекинг потерян: host={name}, artifactId={CurrentArtifactId ?? "null"}, isPinned={isPinned}, начинаем FadeOut={!isPinned}");
+                Debug.Log($"[TrackedModelHost] Tracking lost: host={name}, artifactId={CurrentArtifactId ?? "null"}, isPinned={isPinned}, starting FadeOut={!isPinned}");
             }
         }
         
@@ -481,7 +603,11 @@ public class TrackedModelHost : MonoBehaviour
         }
         else
         {
-            StartFadeOutRoutine();
+            // Only start fade if not already running
+            if (fadeCoroutine == null)
+            {
+                StartFadeOutRoutine();
+            }
         }
     }
     
@@ -520,6 +646,14 @@ public class TrackedModelHost : MonoBehaviour
     {
         // Очищаем кеш материалов перед уничтожением модели
         ClearMaterialCache();
+        
+        // Очищаем ссылки на компоненты взаимодействия
+        if (modelInteractable != null)
+        {
+            modelInteractable.selectEntered.RemoveAllListeners();
+            modelInteractable = null;
+        }
+        modelCollider = null;
         
         if (loadedModel != null)
         {
@@ -663,9 +797,10 @@ public class TrackedModelHost : MonoBehaviour
     
     private void StartFadeOutRoutine()
     {
+        // Don't restart if already running
         if (fadeCoroutine != null)
         {
-            StopCoroutine(fadeCoroutine);
+            return;
         }
         
         if (!gameObject.activeSelf)
@@ -678,7 +813,7 @@ public class TrackedModelHost : MonoBehaviour
     
     private IEnumerator FadeOutCoroutine()
     {
-        Debug.Log($"[TrackedModelHost] FadeOut начат для {name}, delay={fadeOutDelaySeconds}s, duration={fadeOutDurationSeconds}s");
+        Debug.Log($"[TrackedModelHost] FadeOut started for {name}, delay={fadeOutDelaySeconds}s, duration={fadeOutDurationSeconds}s");
         
         if (HasLoadedModel)
         {
@@ -690,10 +825,10 @@ public class TrackedModelHost : MonoBehaviour
             yield return new WaitForSeconds(fadeOutDelaySeconds);
         }
         
-        // Проверяем, не был ли трекинг восстановлен за время ожидания
+        // Check if tracking was restored during wait time
         if (isTrackingActive || isPinned)
         {
-            Debug.Log($"[TrackedModelHost] FadeOut отменен для {name}: isTracking={isTrackingActive}, isPinned={isPinned}");
+            Debug.Log($"[TrackedModelHost] FadeOut cancelled for {name}: isTracking={isTrackingActive}, isPinned={isPinned}");
             fadeCoroutine = null;
             yield break;
         }
@@ -703,10 +838,8 @@ public class TrackedModelHost : MonoBehaviour
             float elapsed = 0f;
             while (elapsed < fadeOutDurationSeconds)
             {
-                // Проверяем, не был ли трекинг восстановлен
                 if (isTrackingActive || isPinned)
                 {
-                    Debug.Log($"[TrackedModelHost] FadeOut прерван во время анимации для {name}");
                     ApplyAlphaToModel(1f);
                     fadeCoroutine = null;
                     yield break;
@@ -724,7 +857,6 @@ public class TrackedModelHost : MonoBehaviour
             yield return new WaitForSeconds(fadeOutDurationSeconds);
         }
         
-        Debug.Log($"[TrackedModelHost] FadeOut завершен для {name}, скрываем объект");
         gameObject.SetActive(false);
         fadeCoroutine = null;
     }
@@ -750,10 +882,8 @@ public class TrackedModelHost : MonoBehaviour
             return;
         }
         
-        // Откладываем кеширование материалов до следующего кадра, если это первое обращение
         if (rendererCacheDirty)
         {
-            // Кешируем материалы асинхронно, чтобы не блокировать кадр
             if (rendererMaterialStates.Count == 0)
             {
                 StartCoroutine(CacheRendererMaterialsAsync());
@@ -1011,64 +1141,31 @@ public class TrackedModelHost : MonoBehaviour
         // 2. Позиция (с учетом distance и смещения низа) - через мировые координаты
         float bottomOffset = isPlaceholder ? currentPlaceholderBottomOffset : currentModelBottomOffset;
         
-        // Проверяем, является ли target wrapper'ом (для моделей с center_model=true)
-        bool isWrapper = target.name.Contains("ModelWrapper");
+        // Для обычной модели: используем полное позиционирование через мировые координаты
+        // 1. Получаем мировую позицию хоста
+        Vector3 hostWorldPosition = transform.position;
         
-        if (isWrapper && modelInsideWrapper != null)
+        // 2. Вычисляем желаемую мировую позицию центра модели
+        // Центр хоста по X и Z, высота = distance + bottomOffset от хоста
+        Vector3 desiredWorldPosition = new Vector3(
+            hostWorldPosition.x,
+            hostWorldPosition.y + distance + bottomOffset,
+            hostWorldPosition.z
+        );
+        
+        // 3. КРИТИЧНО: Преобразуем мировую позицию в локальные координаты родителя модели
+        // Используем parent модели, чтобы правильно учесть иерархию
+        Transform modelParentTransform = target.parent;
+        if (modelParentTransform != null)
         {
-            // Для wrapper'а: wrapper остается в (0,0,0) относительно таргета
-            // Позицию модели внутри wrapper'а обновляем в каждом кадре для компенсации движения таргета
-            target.localPosition = Vector3.zero;
-            
-            // 1. Получаем мировую позицию таргета (хоста - родителя wrapper'а)
-            Vector3 hostWorldPosition = transform.position;
-            
-            // 2. Вычисляем желаемую мировую позицию центра модели
-            // Центр хоста по X и Z, высота = distance + bottomOffset от хоста
-            Vector3 desiredWorldCenter = new Vector3(
-                hostWorldPosition.x,
-                hostWorldPosition.y + distance + bottomOffset,
-                hostWorldPosition.z
-            );
-            
-            // 3. КРИТИЧНО: Преобразуем мировую позицию в локальные координаты WRAPPER'а (target)
-            // Wrapper может иметь вращение, поэтому нужно использовать его InverseTransformPoint
-            // а не хоста (transform)
-            Vector3 desiredLocalCenter = target.InverseTransformPoint(desiredWorldCenter);
-            
-            // 4. Модель уже смещена на -geometricCenter при создании wrapper'а,
-            // поэтому её геометрический центр находится в (0,0,0) wrapper'а
-            // Чтобы геометрический центр был в desiredLocalCenter, устанавливаем позицию
-            modelInsideWrapper.localPosition = desiredLocalCenter;
+            Vector3 localPosition = modelParentTransform.InverseTransformPoint(desiredWorldPosition);
+            target.localPosition = localPosition;
         }
         else
         {
-            // Для обычной модели: используем полное позиционирование через мировые координаты
-            // 1. Получаем мировую позицию хоста
-            Vector3 hostWorldPosition = transform.position;
-            
-            // 2. Вычисляем желаемую мировую позицию центра модели
-            // Центр хоста по X и Z, высота = distance + bottomOffset от хоста
-            Vector3 desiredWorldPosition = new Vector3(
-                hostWorldPosition.x,
-                hostWorldPosition.y + distance + bottomOffset,
-                hostWorldPosition.z
-            );
-            
-            // 3. КРИТИЧНО: Преобразуем мировую позицию в локальные координаты родителя модели
-            // Используем parent модели, чтобы правильно учесть иерархию
-            Transform modelParentTransform = target.parent;
-            if (modelParentTransform != null)
-            {
-                Vector3 localPosition = modelParentTransform.InverseTransformPoint(desiredWorldPosition);
-                target.localPosition = localPosition;
-            }
-            else
-            {
-                // Модель не имеет родителя - это ошибка, но устанавливаем мировую позицию
-                target.position = desiredWorldPosition;
-                Debug.LogWarning($"[TrackedModelHost] Модель {target.name} не имеет родителя! Устанавливаем мировую позицию.");
-            }
+            // Модель не имеет родителя - это ошибка, но устанавливаем мировую позицию
+            target.position = desiredWorldPosition;
+            Debug.LogWarning($"[TrackedModelHost] Модель {target.name} не имеет родителя! Устанавливаем мировую позицию.");
         }
 
         // 3. Ротация
@@ -1225,5 +1322,73 @@ public class TrackedModelHost : MonoBehaviour
         {
             // Это сложнее нарисовать точно без пересчета мировых координат bounds
         }
+    }
+    
+    /// <summary>
+    /// Настраивает коллайдер и XR Interaction для обработки кликов на модели.
+    /// </summary>
+    private void SetupColliderAndXRInteraction()
+    {
+        if (loadedModel == null)
+        {
+            Debug.LogWarning("[TrackedModelHost] Не удалось настроить коллайдер: loadedModel == null");
+            return;
+        }
+        
+        // Получаем bounds модели (используем саму модель, даже если она внутри wrapper'а)
+        Transform modelTransform = modelInsideWrapper != null ? modelInsideWrapper : loadedModel.transform;
+        Bounds modelBounds = GetModelBounds(modelTransform);
+        
+        // Создаем или получаем BoxCollider на loadedModel (wrapper или сама модель)
+        modelCollider = loadedModel.GetComponent<BoxCollider>();
+        if (modelCollider == null)
+        {
+            modelCollider = loadedModel.AddComponent<BoxCollider>();
+        }
+        
+        Vector3 colliderSize = new Vector3(
+            Mathf.Abs(modelBounds.size.x),
+            Mathf.Abs(modelBounds.size.y),
+            Mathf.Abs(modelBounds.size.z)
+        );
+        
+        float minSize = 0.01f;
+        if (colliderSize.x < minSize) colliderSize.x = minSize;
+        if (colliderSize.y < minSize) colliderSize.y = minSize;
+        if (colliderSize.z < minSize) colliderSize.z = minSize;
+        
+        modelCollider.size = colliderSize;
+        modelCollider.center = modelBounds.center;
+        modelCollider.isTrigger = false;
+        
+        // Настраиваем XR Interaction для обработки кликов в AR
+        modelInteractable = loadedModel.GetComponent<UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable>();
+        if (modelInteractable == null)
+        {
+            modelInteractable = loadedModel.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable>();
+        }
+        
+        if (!modelInteractable.enabled)
+        {
+            modelInteractable.enabled = true;
+        }
+        
+        var interactionManager = UnityEngine.XR.Interaction.Toolkit.XRInteractionManager.FindFirstObjectByType<UnityEngine.XR.Interaction.Toolkit.XRInteractionManager>();
+        if (interactionManager == null)
+        {
+            Debug.LogWarning("[TrackedModelHost] XRInteractionManager не найден в сцене! XR Interaction может не работать.");
+        }
+        
+        modelInteractable.selectEntered.RemoveAllListeners();
+        modelInteractable.selectEntered.AddListener(_ => OnModelClicked());
+    }
+    
+    private void OnModelClicked()
+    {
+    }
+    
+    private void OnMouseDown()
+    {
+        OnModelClicked();
     }
 }

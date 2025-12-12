@@ -154,8 +154,11 @@ namespace ARArtifact.UI.Editor
             {
                 Debug.Log("[UIHotReload] Начало перезагрузки UI...");
                 
-                // Обновляем AssetDatabase перед перезагрузкой
-                AssetDatabase.Refresh();
+                // Оптимизация: не обновляем AssetDatabase каждый раз
+                // AssetDatabase.Refresh() вызывает перезагрузку всех ресурсов, включая стили,
+                // что может приводить к утечкам памяти в StyleCatalog
+                // Вместо этого полагаемся на то, что AssetDatabase уже отслеживает изменения
+                // AssetDatabase.Refresh();
                 
                 // Сохраняем состояние навигации (исключая LaunchScreen)
                 var navManager = ARArtifact.UI.Common.NavigationManager.Instance;
@@ -407,53 +410,63 @@ namespace ARArtifact.UI.Editor
         
         private static void ReloadTheme()
         {
-            // Обновляем AssetDatabase перед перезагрузкой
-            AssetDatabase.Refresh();
+            // Оптимизация: не обновляем AssetDatabase каждый раз, это может вызывать утечки памяти
+            // AssetDatabase.Refresh() вызывает перезагрузку всех ресурсов, включая стили
+            // Вместо этого используем кэшированную загрузку
             
             // Перезагружаем Theme.uss для всех UIDocument
             var uiDocuments = Object.FindObjectsByType<UIDocument>(FindObjectsSortMode.None);
+            
+            // Кэшируем загрузку Theme.uss, чтобы не загружать его многократно
+            StyleSheet themeSheet = null;
             
             foreach (var doc in uiDocuments)
             {
                 if (doc.rootVisualElement != null)
                 {
-                    // Перезагружаем Theme.uss через AssetDatabase (без кэширования)
-                    var themeSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(
-                        "Assets/Resources/UI/Styles/Theme.uss");
-                    
+                    // Загружаем Theme.uss только один раз для всех документов
                     if (themeSheet == null)
                     {
+                        // Пробуем загрузить через AssetDatabase (только в Editor режиме)
+                        #if UNITY_EDITOR
+                        themeSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(
+                            "Assets/Resources/UI/Styles/Theme.uss");
+                        #endif
+                        
                         // Fallback на Resources
-                        var oldTheme = Resources.Load<StyleSheet>("UI/Styles/Theme");
-                        if (oldTheme != null) Resources.UnloadAsset(oldTheme);
-                        themeSheet = Resources.Load<StyleSheet>("UI/Styles/Theme");
+                        if (themeSheet == null)
+                        {
+                            themeSheet = Resources.Load<StyleSheet>("UI/Styles/Theme");
+                        }
                     }
                     
                     if (themeSheet != null)
                     {
                         // Обновляем стили в rootVisualElement
-                        // VisualElementStyleSheetSet не поддерживает foreach, поэтому используем Contains и Remove
                         var sheets = doc.rootVisualElement.styleSheets;
                         
-                        // Пытаемся удалить старый Theme (если он был загружен через Resources)
-                        var oldThemeFromResources = Resources.Load<StyleSheet>("UI/Styles/Theme");
-                        if (oldThemeFromResources != null && oldThemeFromResources != themeSheet && sheets.Contains(oldThemeFromResources))
-                        {
-                            sheets.Remove(oldThemeFromResources);
-                        }
-                        
-                        // Пытаемся удалить старый Theme (если он был загружен через AssetDatabase)
-                        // Используем известный путь для поиска
-                        var oldThemeAsset = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Resources/UI/Styles/Theme.uss");
-                        if (oldThemeAsset != null && oldThemeAsset != themeSheet && sheets.Contains(oldThemeAsset))
-                        {
-                            sheets.Remove(oldThemeAsset);
-                        }
-                        
-                        // Добавляем новый Theme.uss (если еще не добавлен)
-                        // Theme обычно подключается через UXML, но добавляем вручную для гарантии
+                        // Проверяем, не добавлен ли уже этот стиль
                         if (!sheets.Contains(themeSheet))
                         {
+                            // Удаляем старые версии Theme, если они есть
+                            // VisualElementStyleSheetSet не поддерживает foreach,
+                            // поэтому используем Contains и Remove для известных стилей
+                            // Пытаемся удалить старые версии Theme через Resources и AssetDatabase
+                            var oldThemeFromResources = Resources.Load<StyleSheet>("UI/Styles/Theme");
+                            if (oldThemeFromResources != null && oldThemeFromResources != themeSheet && sheets.Contains(oldThemeFromResources))
+                            {
+                                sheets.Remove(oldThemeFromResources);
+                            }
+                            
+                            #if UNITY_EDITOR
+                            var oldThemeAsset = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Resources/UI/Styles/Theme.uss");
+                            if (oldThemeAsset != null && oldThemeAsset != themeSheet && sheets.Contains(oldThemeAsset))
+                            {
+                                sheets.Remove(oldThemeAsset);
+                            }
+                            #endif
+                            
+                            // Добавляем новый Theme.uss
                             sheets.Add(themeSheet);
                         }
                     }

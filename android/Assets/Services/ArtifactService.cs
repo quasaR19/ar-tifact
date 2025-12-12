@@ -17,6 +17,8 @@ namespace ARArtifact.Services
     {
         private const string LogPrefix = "[ArtifactService]";
         private const string MediaType3DModel = "3d_model";
+        private const string MediaTypeVideo = "video";
+        private const string MediaTypeYouTube = "youtube";
 
         private static ArtifactService _instance;
         public static ArtifactService Instance
@@ -154,10 +156,41 @@ namespace ARArtifact.Services
                 return false;
             }
 
-            var modelMedia = GetPrimaryModel(record);
-            if (modelMedia == null || string.IsNullOrEmpty(modelMedia.localPath) || !File.Exists(modelMedia.localPath))
+            var primaryMedia = GetPrimaryMedia(record);
+            if (primaryMedia == null)
             {
                 return false;
+            }
+            
+            bool isVideo = IsVideoMediaType(primaryMedia.mediaType);
+            
+            // Для видео проверяем наличие локального файла (если не YouTube) или URL
+            if (isVideo)
+            {
+                if (string.Equals(primaryMedia.mediaType, MediaTypeYouTube, StringComparison.OrdinalIgnoreCase))
+                {
+                    // YouTube - достаточно наличия URL
+                    if (string.IsNullOrEmpty(primaryMedia.remoteUrl))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Blob видео - нужен локальный файл
+                    if (string.IsNullOrEmpty(primaryMedia.localPath) || !File.Exists(primaryMedia.localPath))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                // 3D модель - нужен локальный файл
+                if (string.IsNullOrEmpty(primaryMedia.localPath) || !File.Exists(primaryMedia.localPath))
+                {
+                    return false;
+                }
             }
 
             if (!string.IsNullOrEmpty(record.previewLocalPath) && !File.Exists(record.previewLocalPath))
@@ -165,8 +198,35 @@ namespace ARArtifact.Services
                 record.previewLocalPath = null;
             }
 
-            result = BuildAvailabilityResult(record, modelMedia, isFromCache: true);
+            result = BuildAvailabilityResult(record, primaryMedia, isFromCache: true);
             return true;
+        }
+
+        /// <summary>
+        /// Обновляет путь к локальному превью для записи артефакта.
+        /// </summary>
+        public void UpdateArtifactPreviewPath(string artifactId, string targetId, string previewLocalPath)
+        {
+            if (storageData?.artifacts == null)
+            {
+                return;
+            }
+
+            var record = storageData.artifacts.FirstOrDefault(a =>
+                (string.IsNullOrEmpty(artifactId) || string.Equals(a.artifactId, artifactId, StringComparison.Ordinal)) &&
+                (string.IsNullOrEmpty(targetId) || string.Equals(a.targetId, targetId, StringComparison.Ordinal)));
+
+            if (record != null)
+            {
+                record.previewLocalPath = previewLocalPath;
+                SaveToDisk();
+                RebuildHistoryCache(true);
+                Debug.Log($"{LogPrefix} Обновлен путь превью для артефакта {artifactId ?? targetId}: {previewLocalPath}");
+            }
+            else
+            {
+                Debug.LogWarning($"{LogPrefix} Запись артефакта не найдена для обновления превью: artifactId={artifactId}, targetId={targetId}");
+            }
         }
 
         /// <summary>
@@ -284,6 +344,77 @@ namespace ARArtifact.Services
             storage.ClearAllData();
             SaveToDisk();
             RebuildHistoryCache(true);
+        }
+
+        /// <summary>
+        /// Удаляет запись истории и связанные данные для конкретного targetId.
+        /// </summary>
+        public void DeleteHistoryItem(string targetId)
+        {
+            if (string.IsNullOrEmpty(targetId))
+            {
+                Debug.LogWarning($"{LogPrefix} Попытка удалить запись с пустым targetId");
+                return;
+            }
+
+            if (storageData == null)
+            {
+                Debug.LogWarning($"{LogPrefix} Попытка удалить запись при отсутствии данных");
+                return;
+            }
+
+            Debug.Log($"{LogPrefix} Удаление записи истории для targetId={targetId}");
+
+            // Удаляем запись из истории
+            var historyEntriesToRemove = storageData.history
+                .Where(h => string.Equals(h.targetId, targetId, StringComparison.Ordinal))
+                .ToList();
+            
+            foreach (var entry in historyEntriesToRemove)
+            {
+                storageData.history.Remove(entry);
+            }
+
+            // Находим и удаляем связанные записи артефактов
+            var artifactRecordsToRemove = storageData.artifacts
+                .Where(a => string.Equals(a.targetId, targetId, StringComparison.Ordinal))
+                .ToList();
+
+            foreach (var record in artifactRecordsToRemove)
+            {
+                // Удаляем превью файл
+                if (!string.IsNullOrEmpty(record.previewLocalPath))
+                {
+                    storage.DeleteFileIfExists(record.previewLocalPath);
+                }
+
+                // Удаляем медиа файлы
+                if (record.media != null)
+                {
+                    foreach (var media in record.media)
+                    {
+                        if (!string.IsNullOrEmpty(media.localPath))
+                        {
+                            storage.DeleteFileIfExists(media.localPath);
+                        }
+                    }
+                }
+
+                storageData.artifacts.Remove(record);
+            }
+
+            // Отменяем активные загрузки для этого targetId
+            if (activeTargetRequests.ContainsKey(targetId))
+            {
+                activeTargetRequests.Remove(targetId);
+                Debug.Log($"{LogPrefix} Отменена активная загрузка для targetId={targetId}");
+            }
+
+            // Сохраняем изменения
+            SaveToDisk();
+            RebuildHistoryCache(true);
+
+            Debug.Log($"{LogPrefix} Запись истории удалена для targetId={targetId}");
         }
 
         /// <summary>
@@ -410,33 +541,44 @@ namespace ARArtifact.Services
             var selectedEntry = SelectPreferredEntry(remoteEntries);
             if (selectedEntry == null)
             {
-                FailOperation(operation, "Для маркера нет 3D модели");
+                FailOperation(operation, "Для маркера нет медиа (видео или 3D модели)");
                 yield break;
             }
 
             var record = ConvertToRecord(selectedEntry);
-            var modelMedia = GetPrimaryModel(record);
-            if (modelMedia == null)
+            var primaryMedia = GetPrimaryMedia(record);
+            if (primaryMedia == null)
             {
-                FailOperation(operation, "Не удалось определить 3D медиа для артефакта");
+                FailOperation(operation, "Не удалось определить медиа для артефакта");
                 yield break;
             }
 
             yield return EnsurePreviewDownloaded(record);
 
             string downloadError = null;
-            yield return EnsureModelDownloaded(record, modelMedia, err => downloadError = err);
+            bool isVideoMedia = IsVideoMediaType(primaryMedia.mediaType);
+            
+            if (isVideoMedia)
+            {
+                yield return EnsureVideoDownloaded(record, primaryMedia, err => downloadError = err);
+            }
+            else
+            {
+                yield return EnsureModelDownloaded(record, primaryMedia, err => downloadError = err);
+            }
 
             if (!string.IsNullOrEmpty(downloadError))
             {
-                FailOperation(operation, $"Ошибка загрузки модели: {downloadError}");
+                FailOperation(operation, $"Ошибка загрузки медиа: {downloadError}");
                 yield break;
             }
 
             UpsertArtifactRecord(record);
-            AppendHistoryEntry(record.artifactId, operation.targetId, ArtifactHistoryStatus.Ready, "Модель готова");
+            bool isVideo = IsVideoMediaType(primaryMedia.mediaType);
+            AppendHistoryEntry(record.artifactId, operation.targetId, ArtifactHistoryStatus.Ready, 
+                isVideo ? "Видео готово" : "Модель готова");
 
-            var availability = BuildAvailabilityResult(record, modelMedia);
+            var availability = BuildAvailabilityResult(record, primaryMedia);
             CompleteOperation(operation, availability);
         }
 
@@ -488,9 +630,25 @@ namespace ARArtifact.Services
                         {
                             // Сериализуем обратно в строку для хранения
                             metadataJson = JsonUtility.ToJson(mediaLink.media.metadata);
+                            
+                            // Логируем метаданные в зависимости от типа медиа
+                            if (mediaLink.media.media_type == MediaTypeVideo)
+                            {
+                                Debug.Log($"{LogPrefix} Загружены метаданные для VIDEO media {mediaLink.media.id}: '{metadataJson}' (width={mediaLink.media.metadata?.width}, height={mediaLink.media.metadata?.height}, duration={mediaLink.media.metadata?.duration})");
+                            }
+                            else if (mediaLink.media.media_type == MediaType3DModel)
+                            {
+                                Debug.Log($"{LogPrefix} Загружены метаданные для 3D MODEL media {mediaLink.media.id}: '{metadataJson}' (center_model={mediaLink.media.metadata?.center_model})");
+                            }
+                            else
+                            {
+                                Debug.Log($"{LogPrefix} Загружены метаданные для media {mediaLink.media.id} (type={mediaLink.media.media_type}): '{metadataJson}'");
+                            }
                         }
-                        
-                        Debug.Log($"{LogPrefix} Загружены метаданные для media {mediaLink.media.id}: '{metadataJson}' (center_model={mediaLink.media.metadata?.center_model})");
+                        else
+                        {
+                            Debug.Log($"{LogPrefix} Метаданные отсутствуют для media {mediaLink.media.id} (type={mediaLink.media.media_type})");
+                        }
 
                         remoteArtifact.Artifact.Media.Add(new ArtifactRemoteMedia
                         {
@@ -510,11 +668,38 @@ namespace ARArtifact.Services
 
         private ArtifactRemoteEntry SelectPreferredEntry(List<ArtifactRemoteEntry> entries)
         {
+            // Сначала ищем записи с видео (приоритет видео над 3D моделями)
+            var videoEntry = entries.FirstOrDefault(entry =>
+                entry.Artifact != null &&
+                entry.Artifact.Media != null &&
+                entry.Artifact.Media.Any(media =>
+                    IsVideoMediaType(media.MediaType)));
+            
+            if (videoEntry != null)
+            {
+                return videoEntry;
+            }
+            
+            // Если видео нет, ищем 3D модель
             return entries.FirstOrDefault(entry =>
                 entry.Artifact != null &&
                 entry.Artifact.Media != null &&
                 entry.Artifact.Media.Any(media =>
                     string.Equals(media.MediaType, MediaType3DModel, StringComparison.OrdinalIgnoreCase)));
+        }
+        
+        private bool IsVideoMediaType(string mediaType)
+        {
+            if (string.IsNullOrEmpty(mediaType))
+            {
+                return false;
+            }
+            
+            string lowerType = mediaType.ToLowerInvariant();
+            return lowerType == MediaTypeVideo ||
+                   lowerType == MediaTypeYouTube ||
+                   lowerType == "mp4" ||
+                   lowerType == "webm";
         }
 
         private ArtifactStorage.ArtifactRecord ConvertToRecord(ArtifactRemoteEntry entry)
@@ -574,6 +759,25 @@ namespace ARArtifact.Services
 
         private ArtifactStorage.MediaCacheRecord GetPrimaryModel(ArtifactStorage.ArtifactRecord record)
         {
+            // Устаревший метод, используем GetPrimaryMedia
+            return GetPrimaryMedia(record);
+        }
+        
+        private ArtifactStorage.MediaCacheRecord GetPrimaryMedia(ArtifactStorage.ArtifactRecord record)
+        {
+            if (record?.media == null)
+            {
+                return null;
+            }
+            
+            // Сначала ищем видео (приоритет видео над 3D моделями)
+            var videoMedia = record.media.FirstOrDefault(media => IsVideoMediaType(media.mediaType));
+            if (videoMedia != null)
+            {
+                return videoMedia;
+            }
+            
+            // Если видео нет, ищем 3D модель
             return record.media.FirstOrDefault(media =>
                 string.Equals(media.mediaType, MediaType3DModel, StringComparison.OrdinalIgnoreCase));
         }
@@ -669,9 +873,61 @@ namespace ARArtifact.Services
             media.localPath = localPath;
             media.cachedAtTicks = DateTime.UtcNow.Ticks;
         }
+        
+        private IEnumerator EnsureVideoDownloaded(ArtifactStorage.ArtifactRecord record, ArtifactStorage.MediaCacheRecord media, Action<string> onError)
+        {
+            if (mediaService == null)
+            {
+                onError?.Invoke("Сервис загрузки медиа недоступен");
+                yield break;
+            }
+
+            // Для YouTube видео не нужно скачивать локально
+            if (string.Equals(media.mediaType, MediaTypeYouTube, StringComparison.OrdinalIgnoreCase))
+            {
+                yield break;
+            }
+
+            if (!string.IsNullOrEmpty(media.localPath) && File.Exists(media.localPath))
+            {
+                yield break;
+            }
+
+            bool completed = false;
+            string localPath = null;
+            string error = null;
+
+            mediaService.DownloadVideo(record.artifactId ?? record.targetId, media.mediaId, media.remoteUrl,
+                path =>
+                {
+                    localPath = path;
+                    completed = true;
+                },
+                err =>
+                {
+                    error = err;
+                    completed = true;
+                });
+
+            while (!completed)
+            {
+                yield return null;
+            }
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                onError?.Invoke(error);
+                yield break;
+            }
+
+            media.localPath = localPath;
+            media.cachedAtTicks = DateTime.UtcNow.Ticks;
+        }
 
         private ArtifactAvailabilityResult BuildAvailabilityResult(ArtifactStorage.ArtifactRecord record, ArtifactStorage.MediaCacheRecord media, bool isFromCache = false)
         {
+            bool isVideo = IsVideoMediaType(media.mediaType);
+            
             return new ArtifactAvailabilityResult
             {
                 ArtifactId = record.artifactId,
@@ -681,7 +937,10 @@ namespace ARArtifact.Services
                 PreviewLocalPath = !string.IsNullOrEmpty(record.previewLocalPath) && File.Exists(record.previewLocalPath)
                     ? record.previewLocalPath
                     : null,
-                LocalModelPath = media.localPath,
+                LocalModelPath = isVideo ? null : media.localPath,
+                LocalVideoPath = isVideo ? media.localPath : null,
+                VideoUrl = isVideo ? media.remoteUrl : null,
+                IsVideo = isVideo,
                 Record = record,
                 IsFromCache = isFromCache
             };
@@ -886,6 +1145,7 @@ namespace ARArtifact.Services
                     TargetId = entry.targetId,
                     DisplayName = artifactRecord?.name ?? "Неизвестный артефакт",
                     PreviewLocalPath = previewPath,
+                    PreviewImageUrl = artifactRecord?.previewImageUrl,
                     LastScannedAt = entry.scannedAtTicks > 0
                         ? new DateTime(entry.scannedAtTicks, DateTimeKind.Utc)
                         : DateTime.UtcNow,
@@ -979,9 +1239,15 @@ namespace ARArtifact.Services
         [Serializable]
         private class MetadataDto
         {
+            // Поля для 3D моделей
             public bool center_model;
             public long size;
             public string filename;
+            
+            // Поля для видео
+            public int width;
+            public int height;
+            public float duration;
         }
 
         #endregion
@@ -1004,6 +1270,7 @@ namespace ARArtifact.Services
             public string TargetId;
             public string DisplayName;
             public string PreviewLocalPath;
+            public string PreviewImageUrl;
             public DateTime LastScannedAt;
             public ArtifactHistoryStatus Status;
             public string StatusDescription;
@@ -1017,6 +1284,9 @@ namespace ARArtifact.Services
             public string Description;
             public string PreviewLocalPath;
             public string LocalModelPath;
+            public string LocalVideoPath;
+            public string VideoUrl;
+            public bool IsVideo;
             public ArtifactStorage.ArtifactRecord Record;
             public bool IsFromCache; // Флаг, указывающий, загружена ли модель из кэша
         }

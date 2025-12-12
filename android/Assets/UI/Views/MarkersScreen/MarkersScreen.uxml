@@ -11,7 +11,7 @@
             </ui:VisualElement>
             <ui:VisualElement class="header__right">
                 <ui:Button name="close-button" class="icon-button">
-                    <ui:Label class="icon icon-close" text="×" />
+                    <ui:Label class="icon icon-close" text="x" />
                 </ui:Button>
             </ui:VisualElement>
         </ui:VisualElement>
