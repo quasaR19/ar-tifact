@@ -270,7 +270,7 @@ export async function checkAndUpdateVideoMetadata(
     await updateArtifactMediaMetadata(
       supabaseClient,
       media.id,
-      metadata
+      videoMetadataToRecord(metadata)
     );
 
     return metadata;

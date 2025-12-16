@@ -132,7 +132,14 @@ namespace ARArtifact.UI
                 });
 
                 // Проверяем, является ли маркер failed
-                if (_failedMarkerIds.Contains(marker.id))
+                // Маркер считается failed, если:
+                // 1. Он в списке FailedMarkerIds (не прошел валидацию при добавлении в библиотеку)
+                // 2. У него нет локального изображения (не может быть добавлен в библиотеку)
+                bool isFailed = _failedMarkerIds.Contains(marker.id) || 
+                               string.IsNullOrEmpty(marker.localImagePath) ||
+                               !System.IO.File.Exists(marker.localImagePath);
+                
+                if (isFailed)
                 {
                     markerItem.AddToClassList("failed");
                 }
@@ -155,6 +162,14 @@ namespace ARArtifact.UI
                 {
                     markerItem.AddToClassList("marker-image-placeholder");
                     markerItem.Add(new Label("Нет изображения"));
+                }
+                
+                // Добавляем красный "X" для failed маркеров
+                if (isFailed)
+                {
+                    Label errorX = new Label("X");
+                    errorX.AddToClassList("marker-error-x");
+                    markerItem.Add(errorX);
                 }
                 
                 markersContainer.Add(markerItem);
@@ -232,8 +247,12 @@ namespace ARArtifact.UI
         
         public void SetFailedMarkerIds(System.Collections.Generic.HashSet<string> failedIds)
         {
-            // Сохраняем для использования при обновлении маркеров
-            _failedMarkerIds = failedIds ?? new System.Collections.Generic.HashSet<string>();
+            // ВАЖНО: Создаем копию HashSet, а не сохраняем ссылку!
+            // Иначе при очистке FailedMarkerIds в DynamicReferenceLibrary.CreateLibraryCoroutine()
+            // очищается и наша копия, что приводит к неправильному отображению.
+            _failedMarkerIds = failedIds != null 
+                ? new System.Collections.Generic.HashSet<string>(failedIds) 
+                : new System.Collections.Generic.HashSet<string>();
         }
         
         private System.Collections.Generic.HashSet<string> _failedMarkerIds = new System.Collections.Generic.HashSet<string>();

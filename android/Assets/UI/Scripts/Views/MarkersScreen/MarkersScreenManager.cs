@@ -58,10 +58,27 @@ namespace ARArtifact.UI
             // Но мы выключили его в Awake, поэтому Start не вызовется при первом запуске
             // Инициализацию делаем при первом Show()
             
+            // Подписываемся на события библиотеки как можно раньше
+            // чтобы не пропустить OnLibraryCreated если библиотека создается до открытия экрана
+            SubscribeToLibraryEvents();
+            
             // Если gameObject активен (например, в редакторе), инициализируем сразу
             if (gameObject.activeSelf && !_isInitialized)
             {
                 InitializeController();
+            }
+        }
+        
+        private bool _subscribedToLibraryEvents = false;
+        
+        private void SubscribeToLibraryEvents()
+        {
+            if (_subscribedToLibraryEvents) return;
+            
+            if (Services.DynamicReferenceLibrary.Instance != null)
+            {
+                Services.DynamicReferenceLibrary.Instance.OnLibraryCreated += OnLibraryCreated;
+                _subscribedToLibraryEvents = true;
             }
         }
         
@@ -78,6 +95,12 @@ namespace ARArtifact.UI
                 Services.MarkerService.Instance.OnMarkersUpdated -= OnMarkersUpdated;
                 Services.MarkerService.Instance.OnUpdateStarted -= OnUpdateStarted;
                 Services.MarkerService.Instance.OnUpdateCompleted -= OnUpdateCompleted;
+            }
+            
+            // Отписываемся от событий библиотеки
+            if (Services.DynamicReferenceLibrary.Instance != null)
+            {
+                Services.DynamicReferenceLibrary.Instance.OnLibraryCreated -= OnLibraryCreated;
             }
         }
         
@@ -153,6 +176,10 @@ namespace ARArtifact.UI
                 Services.MarkerService.Instance.OnUpdateCompleted += OnUpdateCompleted;
             }
             
+            // Подписываемся на событие завершения создания библиотеки
+            // (если еще не подписались в Start)
+            SubscribeToLibraryEvents();
+            
             _isInitialized = true;
         }
         
@@ -224,14 +251,29 @@ namespace ARArtifact.UI
         
         private void OnMarkersUpdated(System.Collections.Generic.List<Storage.MarkerStorage.MarkerData> markers)
         {
+            // Обновляем отображение с текущими данными
             RefreshDisplay();
             
-            // Обновляем список failed маркеров в контроллере
-            if (markersScreenController != null && Services.DynamicReferenceLibrary.Instance != null)
+            // Запускаем обновление библиотеки маркеров
+            // ВАЖНО: НЕ вызываем SetFailedMarkerIds здесь, потому что:
+            // 1. RefreshDisplay() уже делает это
+            // 2. UpdateReferenceLibrary() запускает корутину, которая сначала очищает FailedMarkerIds
+            // После завершения создания библиотеки сработает OnLibraryCreated, который обновит отображение
+            if (Services.DynamicReferenceLibrary.Instance != null)
             {
-                markersScreenController.SetFailedMarkerIds(Services.DynamicReferenceLibrary.Instance.FailedMarkerIds);
                 Services.DynamicReferenceLibrary.Instance.UpdateReferenceLibrary();
             }
+        }
+        
+        /// <summary>
+        /// Вызывается после завершения создания библиотеки маркеров
+        /// </summary>
+        private void OnLibraryCreated()
+        {
+            // После создания библиотеки FailedMarkerIds заполнен корректно
+            // Обновляем отображение с актуальными данными о failed маркерах
+            Debug.Log("[MarkersScreenManager] Библиотека маркеров создана, обновляем отображение");
+            RefreshDisplay();
         }
         
         private void OnUpdateStarted()

@@ -66,10 +66,30 @@
   border-radius: 24px;
   width: 400px;
   margin: 10px;
+  position: relative;
+  border-width: 4px;
+  border-color: rgba(0, 0, 0, 0);
 }
 
-/* Marker Item Styles would go here if defined in separate logic, 
-   but assuming they are created dynamically or styles are simple */
+.marker-item.failed {
+  opacity: 0.7;
+  border-color: rgb(255, 0, 0);
+  border-width: 6px;
+}
+
+.marker-error-x {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  -unity-text-align: middle-center;
+  font-size: 200px;
+  color: rgb(255, 0, 0);
+  -unity-font-style: bold;
+  background-color: rgba(0, 0, 0, 0.3);
+  border-radius: 24px;
+}
 
 .empty-state {
   flex-grow: 1;

@@ -403,7 +403,6 @@ namespace ARArtifact.Services
                             failCount++;
                             FailedMarkerIds.Add(marker.id);
                             string errorDetails = GetErrorStatusDescription(jobState.Value.status);
-                            Debug.LogError($"[DynamicReferenceLibrary] [MARKER {markerIndex}/{markers.Count}] Failed to add marker {marker.id}: {jobState.Value.status}\n{errorDetails}\nTexture parameters: size={texture.width}x{texture.height}, format={texture.format}, readable={texture.isReadable}\nFile path: {marker.localImagePath}");
                             
                             // Log to MainScreen with artifact name
                             LogMarkerFailureToMainScreen(marker.id, jobState.Value.status, errorDetails);

@@ -7,7 +7,7 @@
         <ui:VisualElement name="header" class="header">
             <ui:VisualElement class="header__left">
                 <ui:Button name="burger-menu-button" class="button-icon burger-menu-button">
-                    <ui:Label text="☰" class="icon icon-burger" />
+                    <ui:Label text=">" class="icon icon-burger" />
                 </ui:Button>
                 <ui:Label name="header-title" text="ARtifact" class="header__title" />
             </ui:VisualElement>
