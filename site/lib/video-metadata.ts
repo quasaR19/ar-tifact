@@ -45,8 +45,43 @@ export async function extractVideoMetadata(
     const video = document.createElement("video");
     const url = URL.createObjectURL(file);
 
-    video.addEventListener("loadedmetadata", () => {
+    // Проверяем формат файла перед попыткой загрузки
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    const unsupportedFormats = ["avi", "mkv", "flv", "wmv"];
+    
+    if (extension && unsupportedFormats.includes(extension)) {
       URL.revokeObjectURL(url);
+      reject(
+        new Error(
+          `Формат ${extension.toUpperCase()} не поддерживается браузером. HTML5 video элемент поддерживает только MP4, WebM и некоторые другие форматы. Пожалуйста, конвертируйте видео в поддерживаемый формат (например, MP4).`
+        )
+      );
+      return;
+    }
+
+    // Устанавливаем таймаут на случай, если событие не сработает
+    const timeout = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      reject(
+        new Error(
+          `Таймаут при загрузке метаданных видео. Возможно, формат файла не поддерживается или файл поврежден.`
+        )
+      );
+    }, 10000); // 10 секунд
+
+    video.addEventListener("loadedmetadata", () => {
+      clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+
+      // Проверяем, что метаданные действительно загрузились
+      if (video.videoWidth === 0 || video.videoHeight === 0 || isNaN(video.duration)) {
+        reject(
+          new Error(
+            `Не удалось извлечь метаданные видео: некорректные размеры или длительность. Возможно, формат файла не полностью поддерживается браузером.`
+          )
+        );
+        return;
+      }
 
       const metadata: VideoMetadata = {
         width: video.videoWidth,
@@ -57,16 +92,42 @@ export async function extractVideoMetadata(
       };
 
       resolve(metadata);
-    });
+    }, { once: true });
 
-    video.addEventListener("error", (e) => {
+    video.addEventListener("error", () => {
+      clearTimeout(timeout);
       URL.revokeObjectURL(url);
-      reject(
-        new Error(
-          `Не удалось загрузить видео для извлечения метаданных: ${e.message || "Неизвестная ошибка"}`
-        )
-      );
-    });
+      
+      // Получаем детальную информацию об ошибке
+      const error = video.error;
+      let errorMessage = "Неизвестная ошибка при загрузке видео";
+      
+      if (error) {
+        // Коды ошибок MediaError согласно HTML стандарту
+        // MEDIA_ERR_ABORTED = 1
+        // MEDIA_ERR_NETWORK = 2
+        // MEDIA_ERR_DECODE = 3
+        // MEDIA_ERR_SRC_NOT_SUPPORTED = 4
+        switch (error.code) {
+          case 1: // MEDIA_ERR_ABORTED
+            errorMessage = "Загрузка видео была прервана";
+            break;
+          case 2: // MEDIA_ERR_NETWORK
+            errorMessage = "Ошибка сети при загрузке видео";
+            break;
+          case 3: // MEDIA_ERR_DECODE
+            errorMessage = "Ошибка декодирования видео. Возможно, файл поврежден или использует неподдерживаемый кодек";
+            break;
+          case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+            errorMessage = `Формат видео не поддерживается браузером. Файл "${file.name}" использует формат, который не может быть воспроизведен HTML5 video элементом. Рекомендуется использовать MP4 (H.264) или WebM формат.`;
+            break;
+          default:
+            errorMessage = error.message || `Ошибка загрузки видео (код: ${error.code})`;
+        }
+      }
+      
+      reject(new Error(errorMessage));
+    }, { once: true });
 
     video.preload = "metadata";
     video.src = url;
@@ -84,7 +145,28 @@ export async function extractVideoMetadataFromUrl(
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
 
+    // Устанавливаем таймаут на случай, если событие не сработает
+    const timeout = setTimeout(() => {
+      reject(
+        new Error(
+          `Таймаут при загрузке метаданных видео из URL. Возможно, формат видео не поддерживается или ресурс недоступен.`
+        )
+      );
+    }, 10000); // 10 секунд
+
     video.addEventListener("loadedmetadata", () => {
+      clearTimeout(timeout);
+
+      // Проверяем, что метаданные действительно загрузились
+      if (video.videoWidth === 0 || video.videoHeight === 0 || isNaN(video.duration)) {
+        reject(
+          new Error(
+            `Не удалось извлечь метаданные видео: некорректные размеры или длительность. Возможно, формат файла не полностью поддерживается браузером.`
+          )
+        );
+        return;
+      }
+
       const metadata: VideoMetadata = {
         width: video.videoWidth,
         height: video.videoHeight,
@@ -92,15 +174,41 @@ export async function extractVideoMetadataFromUrl(
       };
 
       resolve(metadata);
-    });
+    }, { once: true });
 
-    video.addEventListener("error", (e) => {
-      reject(
-        new Error(
-          `Не удалось загрузить видео для извлечения метаданных: ${e.message || "Неизвестная ошибка"}`
-        )
-      );
-    });
+    video.addEventListener("error", () => {
+      clearTimeout(timeout);
+      
+      // Получаем детальную информацию об ошибке
+      const error = video.error;
+      let errorMessage = "Неизвестная ошибка при загрузке видео";
+      
+      if (error) {
+        // Коды ошибок MediaError согласно HTML стандарту
+        // MEDIA_ERR_ABORTED = 1
+        // MEDIA_ERR_NETWORK = 2
+        // MEDIA_ERR_DECODE = 3
+        // MEDIA_ERR_SRC_NOT_SUPPORTED = 4
+        switch (error.code) {
+          case 1: // MEDIA_ERR_ABORTED
+            errorMessage = "Загрузка видео была прервана";
+            break;
+          case 2: // MEDIA_ERR_NETWORK
+            errorMessage = "Ошибка сети при загрузке видео";
+            break;
+          case 3: // MEDIA_ERR_DECODE
+            errorMessage = "Ошибка декодирования видео. Возможно, файл поврежден или использует неподдерживаемый кодек";
+            break;
+          case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+            errorMessage = `Формат видео не поддерживается браузером. URL использует формат, который не может быть воспроизведен HTML5 video элементом. Рекомендуется использовать MP4 (H.264) или WebM формат.`;
+            break;
+          default:
+            errorMessage = error.message || `Ошибка загрузки видео (код: ${error.code})`;
+        }
+      }
+      
+      reject(new Error(errorMessage));
+    }, { once: true });
 
     video.preload = "metadata";
     video.crossOrigin = "anonymous";

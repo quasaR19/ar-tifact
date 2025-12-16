@@ -33,6 +33,15 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
       const extension = file.name.split(".").pop()?.toLowerCase();
       let type: "3d_model" | "video" | "youtube";
 
+      // Проверяем неподдерживаемые форматы видео перед обработкой
+      const unsupportedFormats = ["avi", "mkv", "flv", "wmv"];
+      if (extension && unsupportedFormats.includes(extension)) {
+        alert(
+          `⚠️ Формат ${extension.toUpperCase()} не поддерживается браузером.\n\nHTML5 video элемент поддерживает только MP4, WebM и MOV форматы. Пожалуйста, конвертируйте видео в поддерживаемый формат (например, MP4).`
+        );
+        return;
+      }
+
       if (extension === "glb") {
         type = "3d_model";
         onMediaAdd({
@@ -44,7 +53,7 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
             size: file.size,
           },
         });
-      } else if (["mp4", "webm", "mov", "avi"].includes(extension || "")) {
+      } else if (["mp4", "webm", "mov"].includes(extension || "")) {
         type = "video";
         
         // Извлекаем метаданные видео
@@ -60,20 +69,26 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
           });
         } catch (error) {
           console.error("[MediaUploader] Ошибка извлечения метаданных видео:", error);
-          // Добавляем медиа без метаданных, если не удалось извлечь
-      onMediaAdd({
-        id: crypto.randomUUID(),
-        type,
-        file,
-        metadata: {
-          filename: file.name,
-          size: file.size,
-        },
-      });
+          
+          // Показываем пользователю понятное сообщение об ошибке
+          const errorMessage = error instanceof Error ? error.message : "Неизвестная ошибка";
+          
+          // Если формат не поддерживается, не добавляем файл
+          if (errorMessage.includes("не поддерживается браузером") || errorMessage.includes("не поддерживается")) {
+            alert(
+              `⚠️ Формат видео не поддерживается\n\n${errorMessage}\n\nФайл не будет добавлен. Пожалуйста, конвертируйте видео в поддерживаемый формат (MP4, WebM или MOV).`
+            );
+            return;
+          }
+          
+          // Для других ошибок (поврежденный файл, ошибка декодирования и т.д.) также не добавляем
+          alert(
+            `⚠️ Ошибка при обработке видео\n\n${errorMessage}\n\nФайл не будет добавлен.`
+          );
         }
       } else {
         alert(
-          "Неподдерживаемый формат файла. Используйте .glb или видео файлы."
+          "Неподдерживаемый формат файла. Используйте .glb или видео файлы (MP4, WebM, MOV)."
         );
         return;
       }
@@ -227,7 +242,7 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
                 Перетащите файл или нажмите для выбора
               </p>
               <p className="text-xs text-muted-foreground">
-                Поддерживаются: .glb, видео файлы или YouTube ссылки
+                Поддерживаются: .glb, видео (MP4, WebM, MOV) или YouTube ссылки
               </p>
             </div>
             <div className="flex gap-2">
@@ -248,7 +263,7 @@ export function MediaUploader({ onMediaAdd, className }: MediaUploaderProps) {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".glb,video/*"
+        accept=".glb,.mp4,.webm,.mov,video/mp4,video/webm,video/quicktime"
         onChange={handleFileInputChange}
         className="hidden"
       />
